@@ -1,4 +1,6 @@
 import importlib.util
+import asyncio
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,3 +40,65 @@ def test_alert_candidates_include_custom_static_alert_windows():
 def test_timer_loop_interval_is_stable_at_15_seconds():
     cog = module.BossTimers.__new__(module.BossTimers)
     assert cog.manage_boss_timers_task.seconds == 15
+
+
+def test_expired_non_static_timer_deletes_cropped_image(tmp_path):
+    cog = module.BossTimers.__new__(module.BossTimers)
+    image_path = tmp_path / "expired_timer.png"
+    image_path.write_bytes(b"test")
+
+    expired_timestamp = int(time.time()) - 5
+    cog.boss_timers = {
+        expired_timestamp: {
+            "name": "Temporary Boss",
+            "image": str(image_path),
+            "sent_alert": False,
+        }
+    }
+    cog.static_events = {}
+    cog._schedule_static_event = lambda event, after=None: None
+
+    asyncio.run(cog._cleanup_expired_timers())
+
+    assert expired_timestamp not in cog.boss_timers
+    assert not image_path.exists()
+
+
+def test_expired_static_timer_keeps_image_and_reschedules(tmp_path):
+    cog = module.BossTimers.__new__(module.BossTimers)
+    image_path = tmp_path / "static_event.png"
+    image_path.write_bytes(b"test")
+
+    event_id = "event-1"
+    event = {
+        "id": event_id,
+        "name": "Static Event",
+        "schedule": "daily",
+        "time": "20:00",
+        "image": str(image_path),
+    }
+
+    expired_timestamp = int(time.time()) - 5
+    cog.boss_timers = {
+        expired_timestamp: {
+            "name": "Static Event",
+            "image": str(image_path),
+            "sent_alert": False,
+            "static_id": event_id,
+        }
+    }
+    cog.static_events = {event_id: event}
+
+    reschedule_calls = []
+
+    def _record_reschedule(event_data, after=None):
+        reschedule_calls.append((event_data.get("id"), after))
+
+    cog._schedule_static_event = _record_reschedule
+
+    asyncio.run(cog._cleanup_expired_timers())
+
+    assert expired_timestamp not in cog.boss_timers
+    assert image_path.exists()
+    assert len(reschedule_calls) == 1
+    assert reschedule_calls[0][0] == event_id

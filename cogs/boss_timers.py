@@ -148,10 +148,7 @@ class BossTimers(commands.Cog):
                         if static_event:
                             self._schedule_static_event(static_event, after=now)
 
-                    if expired_timer.get('static_id') is None:
-                        old_image = expired_timer.get('image')
-                        if old_image and os.path.exists(old_image):
-                            os.remove(old_image)
+                    self._cleanup_timer_image(expired_timer)
                 except Exception as e:
                     print(f"Error cleaning up expired timer: {e}")
 
@@ -169,6 +166,26 @@ class BossTimers(commands.Cog):
         data_dir = Path('data')
         data_dir.mkdir(exist_ok=True)
         return data_dir
+
+    @staticmethod
+    def _delete_file_if_exists(file_path: str | None):
+        if not file_path:
+            return
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as exc:
+            print(f"Failed to delete file {file_path}: {exc}")
+
+    def _cleanup_timer_image(self, timer_data: dict | None):
+        if not timer_data:
+            return
+
+        # Static events reuse long-lived files in data/static_images.
+        if timer_data.get('static_id'):
+            return
+
+        self._delete_file_if_exists(timer_data.get('image'))
 
     def _load_static_events(self):
         try:
@@ -551,6 +568,8 @@ class BossTimers(commands.Cog):
 
             async with self.UPDATE_MESSAGE_LOCKED:
                 cropped_image.save(unique_filename)
+                existing_timer = self.boss_timers.get(future_timestamp)
+                self._cleanup_timer_image(existing_timer)
                 self.boss_timers[future_timestamp] = {
                     'name': boss_name_to_use,
                     'image': str(unique_filename),
@@ -603,15 +622,14 @@ class BossTimers(commands.Cog):
             for key in list(self.boss_timers.keys()):
                 data = self.boss_timers[key]
                 if data['name'].strip().lower() == boss_name.strip().lower():
-                    self.boss_timers.pop(key, None)
+                    removed_timer = self.boss_timers.pop(key, None)
+                    self._cleanup_timer_image(removed_timer)
                     deleted_timers += 1
 
             for event_id in static_ids_to_remove:
                 event = self.static_events.pop(event_id, None)
                 if event:
-                    image_path = event.get('image')
-                    if image_path and os.path.exists(image_path):
-                        os.remove(image_path)
+                    self._delete_file_if_exists(event.get('image'))
                     deleted_timers += 1
 
             if static_ids_to_remove:
@@ -647,6 +665,8 @@ class BossTimers(commands.Cog):
 
                     async with self.UPDATE_MESSAGE_LOCKED:
                         cropped_image.save(unique_filename)
+                        existing_timer = self.boss_timers.get(future_timestamp)
+                        self._cleanup_timer_image(existing_timer)
                         self.boss_timers[future_timestamp] = {
                             'name': boss_name,
                             'image': str(unique_filename),
