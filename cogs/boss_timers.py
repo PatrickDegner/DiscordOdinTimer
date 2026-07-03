@@ -294,6 +294,24 @@ class BossTimers(commands.Cog):
         self.update_message_id = sent_message.id
         return sent_message
 
+    async def _safe_edit_update_message(self, message, content: str, image_path: str | None = None):
+        if image_path and os.path.exists(image_path):
+            try:
+                discord_file = discord.File(image_path, filename=os.path.basename(image_path))
+                await message.edit(content=content, attachments=[discord_file])
+                return
+            except Exception as exc:
+                print(f"Attachment-based update failed, retrying without attachment: {exc}")
+
+        try:
+            await message.edit(content=content, attachments=[])
+        except Exception as exc:
+            print(f"Fallback update failed: {exc}")
+            try:
+                await message.edit(content=content)
+            except Exception as fallback_exc:
+                print(f"Content-only update failed: {fallback_exc}")
+
     def cog_unload(self):
         self.manage_boss_timers_task.cancel()
 
@@ -345,11 +363,10 @@ class BossTimers(commands.Cog):
                 message_content = self._build_event_message_content(next_boss_name, next_timestamp, boss_data)
 
                 if image_path and os.path.exists(image_path):
-                    discord_file = discord.File(image_path, filename=os.path.basename(image_path))
-                    await message_to_edit.edit(content=message_content, attachments=[discord_file])
+                    await self._safe_edit_update_message(message_to_edit, message_content, image_path=image_path)
                 else:
                     print("Image file not found for next Event, updating without image.")
-                    await message_to_edit.edit(content=message_content, attachments=[])
+                    await self._safe_edit_update_message(message_to_edit, message_content)
 
                 alert_candidates = self._get_alert_candidates(now=time.time())
                 for alert_timestamp, alert_boss_data in alert_candidates:
