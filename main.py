@@ -53,7 +53,14 @@ async def on_ready():
 
 async def main():
     await load_cogs()
-    await bot.start(BOT_TOKEN)
+    try:
+        async with bot:
+            await bot.start(BOT_TOKEN)
+    except OSError as exc:
+        print("Network error connecting to Discord. Check your internet connection and DNS settings.")
+        print(f"Details: {exc}")
+    except discord.DiscordException as exc:
+        print(f"Discord client error: {exc}")
 
 if __name__ == "__main__":
     try:

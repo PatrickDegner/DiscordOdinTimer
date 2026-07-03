@@ -8,6 +8,7 @@ import os
 import asyncio
 import time
 from dotenv import load_dotenv
+import aiohttp
 
 # Load environment variables
 load_dotenv()
@@ -76,8 +77,6 @@ class BossTimers(commands.Cog):
 
         async with self.UPDATE_MESSAGE_LOCKED:
             try:
-                # Update fixed boss timers first
-                await self.update_fixed_boss_timers()
                 
                 # Get the single message to edit
                 if not self.update_message_id:
@@ -163,10 +162,10 @@ class BossTimers(commands.Cog):
                 
                 # Check if it's a fixed boss
                 if boss_name in self.SPECIAL_BOSSES_FOR_ALERT:
-                    alert_time = 360  # 6 minutes for special bosses
+                    alert_time = 600  # 10 minutes for special bosses
                     alert_mention = "@everyone"
                 else:
-                    alert_time = 120  # 2 minutes for regular bosses
+                    alert_time = 300  # 5 minutes for regular bosses
                     alert_mention = "@here"
                 
                 if time_until_spawn <= alert_time and time_until_spawn > 0:
@@ -185,49 +184,12 @@ class BossTimers(commands.Cog):
                     except Exception as e:
                         print(f"Error sending/deleting special alert: {e}")
 
+    
+
     # Create a command group for boss management
     boss_group = app_commands.Group(name="boss", description="Manage boss timers.")
 
-    @boss_group.command(name="add", description="Analyze the attached boss image and schedule a timer.")
-    async def add_boss_command(self, interaction: discord.Interaction, image: discord.Attachment):
-        """Slash command to process a boss image."""
-        if interaction.channel_id != BOSS_COMMAND_CHANNEL_ID:
-            await interaction.response.send_message(
-                f"❌ Please use this command in the <#{BOSS_COMMAND_CHANNEL_ID}> channel.", 
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.defer(thinking=True, ephemeral=True)
-        
-        if not image.content_type.startswith('image/'):
-            await interaction.followup.send("❌ The attached file is not a valid image.", ephemeral=True)
-            return
-
-        try:
-            image_bytes = await image.read()
-            img = Image.open(io.BytesIO(image_bytes))
-            result_message, future_timestamp, boss_name = parse_boss_info(img)
-
-            if future_timestamp is not None:
-                # Remove spaces from boss name for filename
-                sanitized_boss_name = boss_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-                unique_filename = f"data/cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
-                
-                crop_bottom_percentage = 0.14
-                cropped_height = int(img.height * (1 - crop_bottom_percentage))
-                cropped_image = img.crop((0, 0, img.width, cropped_height))
-                
-                async with self.UPDATE_MESSAGE_LOCKED:
-                    cropped_image.save(unique_filename)
-                    self.boss_timers[future_timestamp] = {'name': boss_name, 'image': unique_filename, 'sent_alert': False}
-
-                await interaction.followup.send(content=result_message, file=discord.File(unique_filename))
-            else:
-                await interaction.followup.send(f"⚠️ {result_message}", ephemeral=True)
-
-        except Exception as e:
-            await interaction.followup.send(f"An unexpected error occurred: {e}", ephemeral=True)
+    # `/boss add` removed — image scheduling is done via DM or external tools.
 
     @boss_group.command(name="list", description="Shows a list of all upcoming boss timers.")
     async def bosslist_command(self, interaction: discord.Interaction):
@@ -278,14 +240,7 @@ class BossTimers(commands.Cog):
 
             await interaction.followup.send(f"✅ Successfully deleted {len(keys_to_delete)} timer(s) for '{boss_name}'.", ephemeral=True)
 
-    @boss_group.command(name="skip", description="Skip the next occurrence of a fixed boss timer")
-    async def skip_boss_command(self, interaction: discord.Interaction, boss_name: str):
-        """Slash command to skip the next occurrence of a fixed boss."""
-        await interaction.response.defer(thinking=True, ephemeral=True)
-        await interaction.followup.send(
-            "❌ Skipping fixed-schedule bosses has been removed.",
-            ephemeral=True
-        )
+    # Skipping fixed-schedule bosses has been removed; command removed.
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -318,12 +273,12 @@ class BossTimers(commands.Cog):
                 else:
                     await message.channel.send(f"⚠️ {result_message}")
 
+            except (aiohttp.ClientConnectorError, OSError) as e:
+                await message.channel.send("An unexpected network error occurred while fetching the image. Please try again.")
             except Exception as e:
                 await message.channel.send(f"An unexpected error occurred: {e}")
 
-    # Fixed-schedule helpers removed
-
-    # Fixed-schedule timers removed; timers are created via OCR or manual commands only.
+    # Fixed-schedule helpers and timers fully removed; timers are created via OCR or manual commands only.
 
     @staticmethod
     async def cleanup_temp_images():
