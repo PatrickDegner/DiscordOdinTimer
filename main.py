@@ -1,28 +1,29 @@
-import discord
-from discord.ext import commands
+import asyncio
 import json
 import os
-import asyncio
+from pathlib import Path
+
+import discord
+from discord.ext import commands
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+ROOT_DIR = Path(__file__).resolve().parent
+ENV_FILE = ROOT_DIR / '.env'
+CONFIG_FILE = ROOT_DIR / 'config' / 'config.json'
 
-# Load configuration from a JSON file
-with open('config/config.json', 'r') as f:
-    config = json.load(f)
+load_dotenv(dotenv_path=ENV_FILE)
 
-# Get bot token from environment variable
+with CONFIG_FILE.open('r', encoding='utf-8') as config_file:
+    config = json.load(config_file)
+
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
     raise ValueError('BOT_TOKEN not found in .env file')
 
-# Get channel ID from environment variable
 BOSS_COMMAND_CHANNEL_ID = int(os.getenv('BOSS_COMMAND_CHANNEL_ID', 0))
 if not BOSS_COMMAND_CHANNEL_ID:
     raise ValueError('BOSS_COMMAND_CHANNEL_ID must be set in .env file')
 
-# Add to config for cogs to access
 config['BOSS_COMMAND_CHANNEL_ID'] = BOSS_COMMAND_CHANNEL_ID
 
 intents = discord.Intents.default()
@@ -32,13 +33,14 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 async def load_cogs():
     """Dynamically loads all cogs from the cogs directory."""
-    for filename in os.listdir('./cogs'):
-        if filename.endswith('.py'):
-            try:
-                await bot.load_extension(f'cogs.{filename[:-3]}')
-                print(f"Loaded cog: {filename[:-3]}")
-            except Exception as e:
-                print(f"Failed to load cog {filename[:-3]}: {e}")
+    cog_dir = ROOT_DIR / 'cogs'
+    for path in cog_dir.glob('*.py'):
+        cog_name = path.stem
+        try:
+            await bot.load_extension(f'cogs.{cog_name}')
+            print(f"Loaded cog: {cog_name}")
+        except Exception as e:
+            print(f"Failed to load cog {cog_name}: {e}")
 
 @bot.event
 async def on_ready():
