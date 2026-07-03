@@ -1,0 +1,6 @@
+discord.py
+Pillow
+pytesseract
+opencv-python
+numpy
+python-dotenv
