@@ -5,9 +5,10 @@ A Discord bot for managing and tracking boss spawn timers in the Odin game. Uses
 ## Features
 
 - Image-based boss registration via OCR
+- Supports both DM image submissions and slash commands
+- Static recurring events with custom schedule and alert windows
 - Real-time timer management and intelligent update frequency
-- Special boss alerts (configurable)
-- Direct message support for private submissions
+- Automatic cleanup
 
 ## Installation
 
@@ -17,9 +18,34 @@ A Discord bot for managing and tracking boss spawn timers in the Odin game. Uses
 pip install -r requirements.txt
 ```
 
-2. Install Tesseract OCR and set `TESSERACT_PATH` in your `.env` if on Windows.
+2. Install Tesseract OCR.
 
-3. Configure `.env` with `BOT_TOKEN` and `BOSS_COMMAND_CHANNEL_ID`.
+   - On Ubuntu / Debian:
+
+   ```bash
+   sudo apt update
+   sudo apt install -y tesseract-ocr libtesseract-dev
+   ```
+
+   - On Fedora / CentOS (dnf):
+
+   ```bash
+   sudo dnf install -y tesseract
+   ```
+
+   - On Windows:
+
+     1. Download the Tesseract installer from: https://github.com/tesseract-ocr/tesseract/releases
+     2. Run the installer (default path is usually `C:\Program Files\Tesseract-OCR\tesseract.exe`).
+     3. Add `TESSERACT_PATH` to your `.env` pointing to the `tesseract.exe` full path (see next step).
+
+   Verify installation:
+
+   ```bash
+   tesseract --version
+   ```
+
+3. Configure `.env` with `BOT_TOKEN`, `BOSS_COMMAND_CHANNEL_ID`, and (on Windows) optionally `TESSERACT_PATH`.
 
 4. Run the bot:
 
@@ -29,15 +55,42 @@ python main.py
 
 ## Usage
 
-Use the `/boss` slash commands to list and delete timers. Create boss timers by sending a screenshot to the bot via DM.
+Use the `/boss` slash commands to add, list, and delete timers.
+
+You can create timers in three ways:
+- Send a screenshot to the bot in DM (OCR extracts boss and remaining time)
+- Use `/boss add normal` with an image attachment
+- Use `/boss add static` for recurring events
 
 ### Commands
+- `/boss add normal <image>` - create a one-time timer from OCR
+- `/boss add static <name> <schedule> <time> [image] [alert_time] [extra_informations]` - create a recurring event
 - `/boss list` — show upcoming timers
 - `/boss delete <boss_name>` — delete timers by name
 
+### Static event format
+- `name`: a human-friendly event name, e.g. `Dragon Spawn`
+- `schedule`: recurring days, for example:
+  - `daily`
+  - `weekdays`
+  - `weekends`
+  - `Tuesday and Thursday`
+  - `Sunday`
+- `time`: 24-hour time in `HH:MM` format, e.g. `19:30`
+- `image`: optional uploaded image; if omitted, clipboard image is used
+- `alert_time`: optional alert timing between 60 and 3600 seconds (examples: `5m`, `15m`, `60`)
+- `extra_informations`: optional text shown under the event message
+
+### Examples
+- `/boss add normal` (attach a screenshot)
+- `/boss add static Dragon Saturday 20:00`
+- `/boss add static ArenaBoss "Tuesday and Thursday" 18:15`
+- `/boss add static WeekendRaid weekends 12:00` + image + `alert_time: 15m`
+
 ## Notes
-- The project no longer includes the optional fixed-schedule boss feature; timers are created via OCR or manual commands only.
-- Special bosses can be configured in `config/config.json` under `SPECIAL_BOSSES_FOR_ALERT`.
+- One-time OCR timer screenshots are automatically deleted when the event expires or is manually deleted.
+- Static event images are stored in `data/static_images/` and are deleted when the static event is deleted.
+- On startup, the bot also removes leftover temporary PNG files from `data/`.
 
 ## Project Structure
 
@@ -49,7 +102,9 @@ DiscordOdinTimer/
 ├── config/
 │   └── config.json
 ├── data/
-│   └── [temp images]/
+│   ├── static_events.json
+│   ├── static_images/
+│   └── [temporary cropped screenshots]
 ├── cogs/
 │   └── boss_timers.py
 └── ocr.py
