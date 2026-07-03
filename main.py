@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 from pathlib import Path
 
@@ -9,12 +8,8 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parent
 ENV_FILE = ROOT_DIR / '.env'
-CONFIG_FILE = ROOT_DIR / 'config' / 'config.json'
 
 load_dotenv(dotenv_path=ENV_FILE)
-
-with CONFIG_FILE.open('r', encoding='utf-8') as config_file:
-    config = json.load(config_file)
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
@@ -23,8 +18,6 @@ if not BOT_TOKEN:
 BOSS_COMMAND_CHANNEL_ID = int(os.getenv('BOSS_COMMAND_CHANNEL_ID', 0))
 if not BOSS_COMMAND_CHANNEL_ID:
     raise ValueError('BOSS_COMMAND_CHANNEL_ID must be set in .env file')
-
-config['BOSS_COMMAND_CHANNEL_ID'] = BOSS_COMMAND_CHANNEL_ID
 
 intents = discord.Intents.default()
 intents.message_content = True

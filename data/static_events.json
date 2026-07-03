@@ -1,1 +1,20 @@
-[]
+[
+  {
+    "id": "a0c1f1ee-cbfe-4d43-be89-448cefc3d23f",
+    "name": "World Dungeon",
+    "schedule": "daily",
+    "time": "20:15",
+    "image": "data\\static_images\\static_World_Dungeon_a0c1f1ee-cbfe-4d43-be89-448cefc3d23f.png",
+    "alert_seconds": 600,
+    "description": "Please pay attention to guild chat - we will be making callouts during it!"
+  },
+  {
+    "id": "44090697-db29-46f6-a5fc-331a604f5e52",
+    "name": "WD",
+    "schedule": "daily",
+    "time": "20:07",
+    "image": "data\\static_images\\static_WD_44090697-db29-46f6-a5fc-331a604f5e52.png",
+    "alert_seconds": 600,
+    "extra_informations": "come come come"
+  }
+]
