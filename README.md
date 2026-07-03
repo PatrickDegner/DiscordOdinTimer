@@ -17,9 +17,34 @@ A Discord bot for managing and tracking boss spawn timers in the Odin game. Uses
 pip install -r requirements.txt
 ```
 
-2. Install Tesseract OCR and set `TESSERACT_PATH` in your `.env` if on Windows.
+2. Install Tesseract OCR.
 
-3. Configure `.env` with `BOT_TOKEN` and `BOSS_COMMAND_CHANNEL_ID`.
+   - On Ubuntu / Debian:
+
+   ```bash
+   sudo apt update
+   sudo apt install -y tesseract-ocr libtesseract-dev
+   ```
+
+   - On Fedora / CentOS (dnf):
+
+   ```bash
+   sudo dnf install -y tesseract
+   ```
+
+   - On Windows:
+
+     1. Download the Tesseract installer from: https://github.com/tesseract-ocr/tesseract/releases
+     2. Run the installer (default path is usually `C:\Program Files\Tesseract-OCR\tesseract.exe`).
+     3. Add `TESSERACT_PATH` to your `.env` pointing to the `tesseract.exe` full path (see next step).
+
+   Verify installation:
+
+   ```bash
+   tesseract --version
+   ```
+
+3. Configure `.env` with `BOT_TOKEN`, `BOSS_COMMAND_CHANNEL_ID`, and (on Windows) optionally `TESSERACT_PATH`.
 
 4. Run the bot:
 
@@ -29,11 +54,28 @@ python main.py
 
 ## Usage
 
-Use the `/boss` slash commands to list and delete timers. Create boss timers by sending a screenshot to the bot via DM.
+Use the `/boss` slash commands to add, list, and delete timers. Create boss timers by sending a screenshot to the bot via DM or by adding static events with `/boss add static`.
 
 ### Commands
+- `/boss add static <name> <schedule> <time> <image_url>` — create a persistent fixed event
 - `/boss list` — show upcoming timers
 - `/boss delete <boss_name>` — delete timers by name
+
+### Static event format
+- `name`: a human-friendly event name, e.g. `Dragon Spawn`
+- `schedule`: recurring days, for example:
+  - `daily`
+  - `weekdays`
+  - `weekends`
+  - `Tuesday and Thursday`
+  - `Sunday`
+- `time`: 24-hour time in `HH:MM` format, e.g. `19:30`
+- `image_url`: a public URL pointing to the fixed event image
+
+### Examples
+- `/boss add static Dragon Saturday 20:00 https://example.com/dragon.png`
+- `/boss add static ArenaBoss Tuesday and Thursday 18:15 https://example.com/arena.png`
+- `/boss add static WeekendRaid weekends 12:00 https://example.com/raid.png`
 
 ## Notes
 - The project no longer includes the optional fixed-schedule boss feature; timers are created via OCR or manual commands only.
