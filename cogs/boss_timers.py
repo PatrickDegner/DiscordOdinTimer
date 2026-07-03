@@ -177,7 +177,7 @@ class BossTimers(commands.Cog):
                         
                         self.boss_timers[timestamp]['sent_alert'] = True
                         
-                        await asyncio.sleep(120) # Wait 2 minute before deleting
+                        await asyncio.sleep(30) # Wait 30 seconds before deleting
                         await alert_message.delete()
                         print(f"Deleted special alert for {boss_name}.")
                         
