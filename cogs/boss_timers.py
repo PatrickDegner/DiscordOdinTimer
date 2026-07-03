@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import io
+from pathlib import Path
 from PIL import Image
 import json
 import os
@@ -41,6 +42,45 @@ class BossTimers(commands.Cog):
         self.manage_boss_timers_task.start()
         self.special_boss_alert_task.start()
         
+    async def _cleanup_expired_timers(self):
+        now = time.time()
+        for ts in list(self.boss_timers.keys()):
+            if ts < now:
+                try:
+                    old_image = self.boss_timers[ts].get('image')
+                    if old_image and os.path.exists(old_image):
+                        os.remove(old_image)
+                    del self.boss_timers[ts]
+                except Exception as e:
+                    print(f"Error cleaning up expired timer: {e}")
+
+    def _get_next_timer(self):
+        if not self.boss_timers:
+            return None, None
+        next_timestamp = min(self.boss_timers.keys())
+        return next_timestamp, self.boss_timers.get(next_timestamp)
+
+    def _sanitize_filename(self, name: str) -> str:
+        cleaned = name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        return ''.join(char for char in cleaned if char.isalnum() or char in ('_', '-'))
+
+    def _ensure_data_dir(self):
+        data_dir = Path('data')
+        data_dir.mkdir(exist_ok=True)
+        return data_dir
+
+    async def _get_or_create_update_message(self, update_channel):
+        if self.update_message_id:
+            try:
+                return await update_channel.fetch_message(self.update_message_id)
+            except discord.NotFound:
+                self.update_message_id = None
+
+        await self.cleanup_old_messages(update_channel, self.bot.user)
+        sent_message = await update_channel.send("Fetching next Event timer...")
+        self.update_message_id = sent_message.id
+        return sent_message
+
     def cog_unload(self):
         self.manage_boss_timers_task.cancel()
         self.special_boss_alert_task.cancel()
@@ -77,60 +117,40 @@ class BossTimers(commands.Cog):
 
         async with self.UPDATE_MESSAGE_LOCKED:
             try:
-                
-                # Get the single message to edit
-                if not self.update_message_id:
-                    await self.cleanup_old_messages(update_channel, self.bot.user)
-                    sent_message = await update_channel.send("Fetching next Event timer...")
-                    self.update_message_id = sent_message.id
-                
-                message_to_edit = await update_channel.fetch_message(self.update_message_id)
-
-                # Clean up old boss timers
-                for ts in list(self.boss_timers.keys()):
-                    if ts < time.time():
-                        try:
-                            old_image = self.boss_timers[ts].get('image')
-                            if old_image and os.path.exists(old_image):
-                                os.remove(old_image)
-                            del self.boss_timers[ts]
-                        except Exception as e:
-                            print(f"Error cleaning up old image: {e}")
+                message_to_edit = await self._get_or_create_update_message(update_channel)
+                await self._cleanup_expired_timers()
 
                 if not self.boss_timers:
-                    new_content = "There are no upcoming bosses scheduled."
-                    await message_to_edit.edit(content=new_content, attachments=[])
+                    await message_to_edit.edit(content="There are no upcoming bosses scheduled.", attachments=[])
                     return
-                
-                next_timestamp = min(self.boss_timers.keys())
-                boss_data = self.boss_timers.get(next_timestamp)
-                
+
+                next_timestamp, boss_data = self._get_next_timer()
                 if not boss_data:
                     return
 
-                time_until_spawn = next_timestamp - time.time()
                 next_boss_name = boss_data['name']
                 image_path = boss_data['image']
+                message_content = (
+                    f"🔥 The next Event is **{next_boss_name}**!\n"
+                    f"Starts at <t:{next_timestamp}:F> which is <t:{next_timestamp}:R>."
+                )
 
-                message_content = f"🔥 The next Event is **{next_boss_name}**!\nStarts at <t:{next_timestamp}:F> which is <t:{next_timestamp}:R>."
-                
-                if os.path.exists(image_path):
+                if image_path and os.path.exists(image_path):
                     discord_file = discord.File(image_path, filename=os.path.basename(image_path))
                     await message_to_edit.edit(content=message_content, attachments=[discord_file])
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Updated next Event message for {next_boss_name}.")
                 else:
                     print("Image file not found for next Event, updating without image.")
                     await message_to_edit.edit(content=message_content, attachments=[])
-            
+
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Updated next Event message for {next_boss_name}.")
             except discord.NotFound:
                 print("Update message not found. Creating a new one.")
-                sent_message = await update_channel.send("Fetching next Event timer...")
-                self.update_message_id = sent_message.id
+                message_to_edit = await self._get_or_create_update_message(update_channel)
             except Exception as e:
                 print(f"Error updating message: {e}")
 
-        if self.boss_timers:
-            next_timestamp = min(self.boss_timers.keys())
+        next_timestamp, _ = self._get_next_timer()
+        if next_timestamp is not None:
             time_until_spawn = next_timestamp - time.time()
             self.manage_boss_timers_task.change_interval(seconds=5 if time_until_spawn <= 300 else 60)
         else:
@@ -157,27 +177,20 @@ class BossTimers(commands.Cog):
                 if boss_data.get('sent_alert', False):
                     continue
                 
-                alert_time = 0
-                alert_mention = ""
+                alert_time = 600 if boss_name in self.SPECIAL_BOSSES_FOR_ALERT else 300
+                alert_mention = "@everyone" if boss_name in self.SPECIAL_BOSSES_FOR_ALERT else "@here"
                 
-                # Check if it's a fixed boss
-                if boss_name in self.SPECIAL_BOSSES_FOR_ALERT:
-                    alert_time = 600  # 10 minutes for special bosses
-                    alert_mention = "@everyone"
-                else:
-                    alert_time = 300  # 5 minutes for regular bosses
-                    alert_mention = "@here"
-                
-                if time_until_spawn <= alert_time and time_until_spawn > 0:
+                if 0 < time_until_spawn <= alert_time:
                     try:
-                        alert_message_content = f"{alert_mention} **🔥 {boss_name}** starts in **{int(alert_time / 60)} minutes**! Get ready!"
+                        alert_message_content = (
+                            f"{alert_mention} **🔥 {boss_name}** starts in "
+                            f"**{int(alert_time / 60)} minutes**! Get ready!"
+                        )
                         
                         alert_message = await update_channel.send(alert_message_content)
                         print(f"Sent special alert for {boss_name}.")
-                        
                         self.boss_timers[timestamp]['sent_alert'] = True
-                        
-                        await asyncio.sleep(30) # Wait 30 seconds before deleting
+                        await asyncio.sleep(30)
                         await alert_message.delete()
                         print(f"Deleted special alert for {boss_name}.")
                         
@@ -257,9 +270,9 @@ class BossTimers(commands.Cog):
                 result_message, future_timestamp, boss_name = parse_boss_info(img)
 
                 if future_timestamp is not None:
-                    # Remove spaces from boss name for filename
-                    sanitized_boss_name = boss_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
-                    unique_filename = f"data/cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
+                    sanitized_boss_name = self._sanitize_filename(boss_name)
+                    data_dir = self._ensure_data_dir()
+                    unique_filename = data_dir / f"cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
                     
                     crop_bottom_percentage = 0.14
                     cropped_height = int(img.height * (1 - crop_bottom_percentage))
@@ -267,7 +280,7 @@ class BossTimers(commands.Cog):
                     
                     async with self.UPDATE_MESSAGE_LOCKED:
                         cropped_image.save(unique_filename)
-                        self.boss_timers[future_timestamp] = {'name': boss_name, 'image': unique_filename, 'sent_alert': False}
+                        self.boss_timers[future_timestamp] = {'name': boss_name, 'image': str(unique_filename), 'sent_alert': False}
 
                     await message.channel.send(content=result_message, file=discord.File(unique_filename))
                 else:

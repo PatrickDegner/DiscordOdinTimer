@@ -29,10 +29,9 @@ python main.py
 
 ## Usage
 
-Use the `/boss` slash commands to add, list, and delete timers. Upload a screenshot via `/boss add` or send one to the bot via DM.
+Use the `/boss` slash commands to list and delete timers. Create boss timers by sending a screenshot to the bot via DM.
 
 ### Commands
-- `/boss add <image>` — create a timer from a screenshot
 - `/boss list` — show upcoming timers
 - `/boss delete <boss_name>` — delete timers by name
 
