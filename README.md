@@ -64,7 +64,7 @@ You can create timers in three ways:
 
 ### Commands
 - `/boss add normal <image>` - create a one-time timer from OCR
-- `/boss add static <name> <schedule> <time> [image] [alert_time] [extra_informations]` - create a recurring event
+- `/boss add static <name> <schedule> <time> [image] [alert_time] [alert_mention] [extra_informations]` - create a recurring event
 - `/boss list` — show upcoming timers
 - `/boss delete <boss_name>` — delete timers by name
 
@@ -86,11 +86,14 @@ You can create timers in three ways:
 - `time`: 24-hour time in `HH:MM` format, e.g. `19:30`
 - `image`: optional uploaded image; if omitted, clipboard image is used
 - `alert_time`: optional alert timing between 60 and 3600 seconds (examples: `5m`, `15m`, `60`)
+- `alert_mention`: optional text mention for alerts like `@role`, `@everyone`, or `LW` (defaults to `@here`)
 - `extra_informations`: optional text shown under the event message
 
 ### Examples
 - `/boss add normal` (attach a screenshot)
 - `/boss add static Dragon Saturday 20:00`
+- `/boss add static Dragon Saturday 20:00` + `alert_mention: @everyone`
+- `/boss add static Dragon Saturday 20:00` + `alert_mention: @LW`
 - `/boss add static ArenaBoss "Tuesday and Thursday" 18:15`
 - `/boss add static WeekendRaid weekends 12:00` + image + `alert_time: 15m`
 
