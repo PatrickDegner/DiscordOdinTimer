@@ -128,8 +128,6 @@ DiscordOdinTimer/
 ├── main.py
 ├── requirements.txt
 ├── .env
-├── config/
-│   └── config.json
 ├── data/
 │   ├── static_events.json
 │   ├── static_images/
