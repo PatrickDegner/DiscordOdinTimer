@@ -28,6 +28,7 @@ except (FileNotFoundError, json.JSONDecodeError):
 
 # Get BOSS_COMMAND_CHANNEL_ID from environment
 BOSS_COMMAND_CHANNEL_ID = int(os.getenv('BOSS_COMMAND_CHANNEL_ID', 0))
+ALLOWED_BOSS_MANAGER_ROLE_ID = int(os.getenv('ALLOWED_BOSS_MANAGER_ROLE_ID', 0))
 
 # Import OCR functions from the ocr directory
 from ocr import parse_boss_info
@@ -157,6 +158,17 @@ class BossTimers(commands.Cog):
             if self._should_alert_now(timestamp, boss_data, now=now_ts):
                 candidates.append((timestamp, boss_data))
         return sorted(candidates, key=lambda item: item[0])
+
+    @staticmethod
+    def _has_management_permission(interaction: discord.Interaction) -> bool:
+        if not ALLOWED_BOSS_MANAGER_ROLE_ID:
+            return False
+
+        roles = getattr(interaction.user, 'roles', None)
+        if not roles:
+            return False
+
+        return any(getattr(role, 'id', None) == ALLOWED_BOSS_MANAGER_ROLE_ID for role in roles)
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -529,6 +541,13 @@ class BossTimers(commands.Cog):
         extra_informations: str | None = None,
     ):
         """Slash command to add a persistent static event."""
+        if not self._has_management_permission(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have the required boss management role to use this command.",
+                ephemeral=True,
+            )
+            return
+
         if interaction.channel_id != BOSS_COMMAND_CHANNEL_ID:
             await interaction.response.send_message(
                 f"❌ Please use this command in the <#{BOSS_COMMAND_CHANNEL_ID}> channel.",
@@ -619,6 +638,13 @@ class BossTimers(commands.Cog):
         image: discord.Attachment,
     ):
         """Slash command to add a boss timer using OCR like the DM image flow."""
+        if not self._has_management_permission(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have the required boss management role to use this command.",
+                ephemeral=True,
+            )
+            return
+
         if interaction.channel_id != BOSS_COMMAND_CHANNEL_ID:
             await interaction.response.send_message(
                 f"❌ Please use this command in the <#{BOSS_COMMAND_CHANNEL_ID}> channel.",
@@ -715,6 +741,13 @@ class BossTimers(commands.Cog):
     @boss_group.command(name="delete", description="Deletes all timer entries for a specified boss.")
     async def delete_boss_command(self, interaction: discord.Interaction, boss_name: str):
         """Slash command to delete boss timers by name."""
+        if not self._has_management_permission(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have the required boss management role to use this command.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer(thinking=True, ephemeral=True)
         
         async with self.UPDATE_MESSAGE_LOCKED:

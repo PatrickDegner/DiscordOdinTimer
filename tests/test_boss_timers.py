@@ -2,6 +2,7 @@ import importlib.util
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("boss_timers_module", ROOT / "cogs" / "boss_timers.py")
@@ -230,3 +231,27 @@ def test_read_attachment_with_retries_raises_after_max_attempts():
         assert "after 2 attempts" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError after retry exhaustion")
+
+
+def test_has_management_permission_returns_true_for_allowed_role(monkeypatch):
+    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_ID", 1522906832492822688)
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(roles=[SimpleNamespace(id=111), SimpleNamespace(id=1522906832492822688)])
+    )
+    assert module.BossTimers._has_management_permission(interaction) is True
+
+
+def test_has_management_permission_returns_false_without_allowed_role(monkeypatch):
+    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_ID", 1522906832492822688)
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(roles=[SimpleNamespace(id=111), SimpleNamespace(id=222)])
+    )
+    assert module.BossTimers._has_management_permission(interaction) is False
+
+
+def test_has_management_permission_returns_false_when_role_id_not_configured(monkeypatch):
+    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_ID", 0)
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(roles=[SimpleNamespace(id=1522906832492822688)])
+    )
+    assert module.BossTimers._has_management_permission(interaction) is False

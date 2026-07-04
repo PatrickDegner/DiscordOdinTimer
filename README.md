@@ -45,7 +45,16 @@ pip install -r requirements.txt
    tesseract --version
    ```
 
-3. Configure `.env` with `BOT_TOKEN`, `BOSS_COMMAND_CHANNEL_ID`, and (on Windows) optionally `TESSERACT_PATH`.
+3. Configure `.env` with `BOT_TOKEN`, `BOSS_COMMAND_CHANNEL_ID`, `ALLOWED_BOSS_MANAGER_ROLE_ID`, and (on Windows) optionally `TESSERACT_PATH`.
+
+Example:
+
+```env
+BOT_TOKEN=your_bot_token_here
+BOSS_COMMAND_CHANNEL_ID=1521521777963044934
+ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688
+TESSERACT_PATH=C:\Program Files\Tesseract-OCR\tesseract.exe
+```
 
 4. Run the bot:
 
@@ -68,6 +77,12 @@ You can create timers in three ways:
 - `/boss list` — show upcoming timers
 - `/boss delete <boss_name>` — delete timers by name
 
+### Command permissions
+- `/boss list` can be used by everyone.
+- `/boss add normal`, `/boss add static`, and `/boss delete` require the role whose ID is set in `.env` as `ALLOWED_BOSS_MANAGER_ROLE_ID`.
+- Example: `ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688`
+- If `ALLOWED_BOSS_MANAGER_ROLE_ID` is missing or set to `0`, add/delete commands are blocked for everyone.
+
 ### Boss image library for /boss add normal
 - Put reusable boss images in `data/boss_images/`.
 - Name files after the boss, for example: `bjorn.jpg`, `chaos_priest.jpg`.
@@ -86,7 +101,9 @@ You can create timers in three ways:
 - `time`: 24-hour time in `HH:MM` format, e.g. `19:30`
 - `image`: optional uploaded image; if omitted, clipboard image is used
 - `alert_time`: optional alert timing between 60 and 3600 seconds (examples: `5m`, `15m`, `60`)
-- `alert_mention`: optional text mention for alerts like `@role`, `@everyone`, or `LW` (defaults to `@here`)
+- `alert_mention`: optional text mention for alerts like `@role`, `@everyone`, or `LW`
+- If `alert_mention` is blank, the bot uses `@here`
+- Plain text mentions are normalized to one leading `@`, so `LW`, `@LW`, and `@@LW` all become `@LW`
 - `extra_informations`: optional text shown under the event message
 
 ### Examples
@@ -94,6 +111,7 @@ You can create timers in three ways:
 - `/boss add static Dragon Saturday 20:00`
 - `/boss add static Dragon Saturday 20:00` + `alert_mention: @everyone`
 - `/boss add static Dragon Saturday 20:00` + `alert_mention: @LW`
+- `/boss add static Dragon Saturday 20:00` + `alert_mention: LW`
 - `/boss add static ArenaBoss "Tuesday and Thursday" 18:15`
 - `/boss add static WeekendRaid weekends 12:00` + image + `alert_time: 15m`
 
