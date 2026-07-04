@@ -18,5 +18,65 @@
     "alert_seconds": 900,
     "alert_mention": "@here",
     "extra_informations": "Check the chat for possible photo! You are responsible for your own attendance!"
+  },
+  {
+    "id": "e6b9107a-a12d-4d09-a680-b5c1d000c19b",
+    "name": "Realm Invader",
+    "schedule": "daily",
+    "time": "14:00",
+    "image": "data\\static_images\\RealmInvader.png",
+    "alert_seconds": 900,
+    "alert_mention": "@here",
+    "extra_informations": "If you still need anything related to accessories - you better show!"
+  },
+  {
+    "id": "e6b9107a-a12d-4d09-a680-b5c1d000c19c",
+    "name": "Realm Invader",
+    "schedule": "daily",
+    "time": "22:00",
+    "image": "data\\static_images\\RealmInvader.png",
+    "alert_seconds": 900,
+    "alert_mention": "@here",
+    "extra_informations": "If you still need anything related to accessories - you better show!"
+  },
+  {
+    "id": "e6b9107a-a12d-4d09-a680-b5c1d000c19e",
+    "name": "Shadow Dungeon",
+    "schedule": "Tuesday and Thursday",
+    "time": "23:30",
+    "image": "data\\static_images\\ShadowDungeon.png",
+    "alert_seconds": 900,
+    "alert_mention": "@here",
+    "extra_informations": "If you were unable to farm enough tokens, please write in our flood channels so guild members can help you with them."
+  },
+  {
+    "id": "e6b9107a-a12d-4d09-a680-b5c1d000c19f",
+    "name": "World Dungeon",
+    "schedule": "Sunday",
+    "time": "05:00",
+    "image": "data\\static_images\\WorldDungeon.png",
+    "alert_seconds": 900,
+    "alert_mention": "@here",
+    "extra_informations": "Please pay attention to guild chat - we will be making callouts during it!"
+  },
+  {
+    "id": "5a6bf957-af32-4f1d-a9e9-0238b98097da",
+    "name": "Guild Dungeon LW",
+    "schedule": "Sunday",
+    "time": "19:30",
+    "image": "data\\static_images\\GuildDungeon.png",
+    "alert_seconds": 900,
+    "alert_mention": "<@&1522897837170491442>",
+    "extra_informations": "Please check chat for start time!"
+  },
+  {
+    "id": "cfd3359b-48cf-4b1d-bc4e-607c958be2a1",
+    "name": "Guild Dungeon LW2",
+    "schedule": "Tuesday",
+    "time": "21:20",
+    "image": "data\\static_images\\GuildDungeon.png",
+    "alert_seconds": 900,
+    "alert_mention": "<@&1522944973954093076>",
+    "extra_informations": "Please check chat for start time!"
   }
 ]
