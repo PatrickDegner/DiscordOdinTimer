@@ -11,7 +11,7 @@
   },
   {
     "id": "e6b9107a-a12d-4d09-a680-b5c1d000c19a",
-    "name": "PM  Boss Chain",
+    "name": "PM Boss Chain",
     "schedule": "daily",
     "time": "19:00",
     "image": "data\\static_images\\PMBossChain.png",

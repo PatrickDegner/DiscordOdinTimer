@@ -56,6 +56,13 @@ ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688
 TESSERACT_PATH=C:\Program Files\Tesseract-OCR\tesseract.exe
 ```
 
+Startup retry settings are optional. If omitted, the defaults are:
+
+```env
+STARTUP_RETRY_DELAY_SECONDS=2
+MAX_STARTUP_RETRIES=3
+```
+
 4. Run the bot:
 
 ```bash
