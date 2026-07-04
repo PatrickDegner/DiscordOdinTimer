@@ -257,6 +257,29 @@ def test_read_attachment_with_retries_raises_after_max_attempts():
         raise AssertionError("Expected RuntimeError after retry exhaustion")
 
 
+def test_safe_edit_update_message_preserves_existing_attachments_without_reupload():
+    class _MessageStub:
+        def __init__(self):
+            self.calls = []
+
+        async def edit(self, **kwargs):
+            self.calls.append(kwargs)
+
+    cog = module.BossTimers.__new__(module.BossTimers)
+    message = _MessageStub()
+
+    asyncio.run(
+        cog._safe_edit_update_message(
+            message,
+            "Updated timer text only",
+            preserve_attachments=True,
+        )
+    )
+
+    assert len(message.calls) == 1
+    assert message.calls[0] == {"content": "Updated timer text only"}
+
+
 def test_has_management_permission_returns_true_for_allowed_role(monkeypatch):
     monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_ID", 1522906832492822688)
     interaction = SimpleNamespace(

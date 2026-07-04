@@ -39,6 +39,7 @@ class BossTimers(commands.Cog):
         self.boss_timers = {}
         self.update_message_id = None
         self.upcoming_message_id = None
+        self.last_update_event_key = None
         self.UPDATE_MESSAGE_LOCKED = asyncio.Lock()
         self.static_events_file = Path('data') / 'static_events.json'
         self.static_image_dir = Path('data') / 'static_images'
@@ -453,7 +454,13 @@ class BossTimers(commands.Cog):
         self.upcoming_message_id = sent_message.id
         return sent_message
 
-    async def _safe_edit_update_message(self, message, content: str, image_path: str | None = None):
+    async def _safe_edit_update_message(
+        self,
+        message,
+        content: str,
+        image_path: str | None = None,
+        preserve_attachments: bool = False,
+    ):
         if image_path and os.path.exists(image_path):
             try:
                 discord_file = discord.File(image_path, filename=os.path.basename(image_path))
@@ -461,6 +468,13 @@ class BossTimers(commands.Cog):
                 return
             except Exception as exc:
                 print(f"Attachment-based update failed, retrying without attachment: {exc}")
+
+        if preserve_attachments:
+            try:
+                await message.edit(content=content)
+                return
+            except Exception as exc:
+                print(f"Preserve-attachment update failed: {exc}")
 
         try:
             await message.edit(content=content, attachments=[])
@@ -512,6 +526,7 @@ class BossTimers(commands.Cog):
 
                 if not self.boss_timers:
                     await message_to_edit.edit(content="There are no upcoming bosses scheduled.", attachments=[])
+                    self.last_update_event_key = None
                     await upcoming_message_to_edit.edit(
                         content=self._build_upcoming_events_section(now=time.time()),
                         attachments=[],
@@ -526,12 +541,23 @@ class BossTimers(commands.Cog):
                 image_path = boss_data['image']
                 message_content = self._build_event_message_content(next_boss_name, next_timestamp, boss_data)
                 upcoming_content = self._build_upcoming_events_section(now=time.time())
+                current_event_key = (next_timestamp, next_boss_name, image_path)
+                event_changed = current_event_key != self.last_update_event_key
 
-                if image_path and os.path.exists(image_path):
+                if event_changed and image_path and os.path.exists(image_path):
                     await self._safe_edit_update_message(message_to_edit, message_content, image_path=image_path)
-                else:
-                    print("Image file not found for next Event, updating without image.")
+                elif event_changed:
+                    if image_path:
+                        print("Image file not found for next Event, updating without image.")
                     await self._safe_edit_update_message(message_to_edit, message_content)
+                else:
+                    await self._safe_edit_update_message(
+                        message_to_edit,
+                        message_content,
+                        preserve_attachments=True,
+                    )
+
+                self.last_update_event_key = current_event_key
 
                 await self._safe_edit_update_message(upcoming_message_to_edit, upcoming_content)
 
