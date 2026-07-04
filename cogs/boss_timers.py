@@ -40,7 +40,9 @@ class BossTimers(commands.Cog):
         self.UPDATE_MESSAGE_LOCKED = asyncio.Lock()
         self.static_events_file = Path('data') / 'static_events.json'
         self.static_image_dir = Path('data') / 'static_images'
+        self.boss_image_library_dir = Path('data') / 'boss_images'
         self.static_image_dir.mkdir(parents=True, exist_ok=True)
+        self.boss_image_library_dir.mkdir(parents=True, exist_ok=True)
         self.static_events = {}
         self._load_static_events()
         self._schedule_all_static_events()
@@ -162,6 +164,25 @@ class BossTimers(commands.Cog):
         cleaned = name.replace(' ', '_').replace('/', '_').replace('\\', '_')
         return ''.join(char for char in cleaned if char.isalnum() or char in ('_', '-'))
 
+    def _normalize_boss_image_key(self, name: str) -> str:
+        return self._sanitize_filename(name).lower()
+
+    def _find_library_boss_image(self, boss_name: str) -> str | None:
+        image_dir = getattr(self, 'boss_image_library_dir', Path('data') / 'boss_images')
+        if not image_dir.exists():
+            return None
+
+        target_key = self._normalize_boss_image_key(boss_name)
+        allowed_extensions = {'.png', '.jpg', '.jpeg', '.webp'}
+
+        for candidate in image_dir.iterdir():
+            if not candidate.is_file() or candidate.suffix.lower() not in allowed_extensions:
+                continue
+            if self._normalize_boss_image_key(candidate.stem) == target_key:
+                return str(candidate)
+
+        return None
+
     def _ensure_data_dir(self):
         data_dir = Path('data')
         data_dir.mkdir(exist_ok=True)
@@ -183,6 +204,10 @@ class BossTimers(commands.Cog):
 
         # Static events reuse long-lived files in data/static_images.
         if timer_data.get('static_id'):
+            return
+
+        # Boss image library files are user-managed and should never be auto-deleted.
+        if timer_data.get('is_custom_image', False):
             return
 
         self._delete_file_if_exists(timer_data.get('image'))
@@ -561,24 +586,36 @@ class BossTimers(commands.Cog):
                 await interaction.followup.send("Could not determine a boss name from the OCR image.", ephemeral=True)
                 return
 
-            sanitized_boss_name = self._sanitize_filename(boss_name_to_use)
-            data_dir = self._ensure_data_dir()
-            unique_filename = data_dir / f"cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
-            cropped_image = self._crop_image_for_timer(image_to_process)
+            library_image_path = self._find_library_boss_image(boss_name_to_use)
+            using_library_image = library_image_path is not None
+
+            if using_library_image:
+                selected_image_path = library_image_path
+            else:
+                sanitized_boss_name = self._sanitize_filename(boss_name_to_use)
+                data_dir = self._ensure_data_dir()
+                unique_filename = data_dir / f"cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
+                cropped_image = self._crop_image_for_timer(image_to_process)
+                cropped_image.save(unique_filename)
+                selected_image_path = str(unique_filename)
 
             async with self.UPDATE_MESSAGE_LOCKED:
-                cropped_image.save(unique_filename)
                 existing_timer = self.boss_timers.get(future_timestamp)
                 self._cleanup_timer_image(existing_timer)
                 self.boss_timers[future_timestamp] = {
                     'name': boss_name_to_use,
-                    'image': str(unique_filename),
+                    'image': selected_image_path,
                     'sent_alert': False,
                     'alert_seconds': 300,
                     'extra_informations': '',
+                    'is_custom_image': using_library_image,
                 }
 
-            await interaction.followup.send(content=result_message, file=discord.File(unique_filename))
+            response_message = result_message
+            if using_library_image:
+                response_message += "\nUsing image from data/boss_images/."
+
+            await interaction.followup.send(content=response_message, file=discord.File(selected_image_path))
         except Exception as exc:
             await interaction.followup.send(f"An unexpected error occurred: {exc}", ephemeral=True)
 
@@ -658,24 +695,36 @@ class BossTimers(commands.Cog):
                 result_message, future_timestamp, boss_name = parse_boss_info(img)
 
                 if future_timestamp is not None:
-                    sanitized_boss_name = self._sanitize_filename(boss_name)
-                    data_dir = self._ensure_data_dir()
-                    unique_filename = data_dir / f"cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
-                    cropped_image = self._crop_image_for_timer(img)
+                    library_image_path = self._find_library_boss_image(boss_name)
+                    using_library_image = library_image_path is not None
+
+                    if using_library_image:
+                        selected_image_path = library_image_path
+                    else:
+                        sanitized_boss_name = self._sanitize_filename(boss_name)
+                        data_dir = self._ensure_data_dir()
+                        unique_filename = data_dir / f"cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
+                        cropped_image = self._crop_image_for_timer(img)
+                        cropped_image.save(unique_filename)
+                        selected_image_path = str(unique_filename)
 
                     async with self.UPDATE_MESSAGE_LOCKED:
-                        cropped_image.save(unique_filename)
                         existing_timer = self.boss_timers.get(future_timestamp)
                         self._cleanup_timer_image(existing_timer)
                         self.boss_timers[future_timestamp] = {
                             'name': boss_name,
-                            'image': str(unique_filename),
+                            'image': selected_image_path,
                             'sent_alert': False,
                             'alert_seconds': 300,
                             'description': '',
+                            'is_custom_image': using_library_image,
                         }
 
-                    await message.channel.send(content=result_message, file=discord.File(unique_filename))
+                    response_message = result_message
+                    if using_library_image:
+                        response_message += "\nUsing image from data/boss_images/."
+
+                    await message.channel.send(content=response_message, file=discord.File(selected_image_path))
                 else:
                     await message.channel.send(f"⚠️ {result_message}")
 

@@ -102,3 +102,45 @@ def test_expired_static_timer_keeps_image_and_reschedules(tmp_path):
     assert image_path.exists()
     assert len(reschedule_calls) == 1
     assert reschedule_calls[0][0] == event_id
+
+
+def test_find_library_boss_image_matches_sanitized_name(tmp_path):
+    cog = module.BossTimers.__new__(module.BossTimers)
+    boss_image_dir = tmp_path / "boss_images"
+    boss_image_dir.mkdir()
+    expected_image = boss_image_dir / "chaos_priest.jpg"
+    expected_image.write_bytes(b"test")
+    cog.boss_image_library_dir = boss_image_dir
+
+    found = cog._find_library_boss_image("Chaos Priest")
+    assert found == str(expected_image)
+
+
+def test_cleanup_timer_image_keeps_custom_library_image(tmp_path):
+    cog = module.BossTimers.__new__(module.BossTimers)
+    image_path = tmp_path / "bjorn.jpg"
+    image_path.write_bytes(b"test")
+
+    timer_data = {
+        "name": "Bjorn",
+        "image": str(image_path),
+        "is_custom_image": True,
+    }
+
+    cog._cleanup_timer_image(timer_data)
+    assert image_path.exists()
+
+
+def test_cleanup_existing_timer_does_not_delete_library_image_when_replaced(tmp_path):
+    cog = module.BossTimers.__new__(module.BossTimers)
+    library_image = tmp_path / "chaos_priest.jpg"
+    library_image.write_bytes(b"test")
+
+    existing_timer = {
+        "name": "Chaos Priest",
+        "image": str(library_image),
+        "is_custom_image": True,
+    }
+
+    cog._cleanup_timer_image(existing_timer)
+    assert library_image.exists()
