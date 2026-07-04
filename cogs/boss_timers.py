@@ -38,6 +38,7 @@ class BossTimers(commands.Cog):
         self.bot = bot
         self.boss_timers = {}
         self.update_message_id = None
+        self.upcoming_message_id = None
         self.UPDATE_MESSAGE_LOCKED = asyncio.Lock()
         self.static_events_file = Path('data') / 'static_events.json'
         self.static_image_dir = Path('data') / 'static_images'
@@ -100,6 +101,38 @@ class BossTimers(commands.Cog):
             content += f"\n\n{extra_informations}"
 
         return content
+
+    def _build_upcoming_events_section(
+        self,
+        now: float | None = None,
+        horizon_seconds: int = 24 * 60 * 60,
+        max_items: int = 20,
+        timers: dict | None = None,
+    ) -> str:
+        now_ts = now if now is not None else time.time()
+        cutoff_ts = now_ts + horizon_seconds
+        source = timers if timers is not None else self.boss_timers
+
+        upcoming = [
+            (timestamp, boss_data)
+            for timestamp, boss_data in sorted(source.items())
+            if now_ts <= timestamp <= cutoff_ts
+        ]
+
+        if not upcoming:
+            return "**Upcoming events (next 24h):**\nNo upcoming events in the next 24 hours."
+
+        shown = upcoming[:max_items]
+        lines = ["**Upcoming events (next 24h):**"]
+        for timestamp, boss_data in shown:
+            boss_name = boss_data.get('name', 'Unknown Event')
+            lines.append(f"- **{boss_name}**: <t:{timestamp}:F> (<t:{timestamp}:R>)")
+
+        remaining = len(upcoming) - len(shown)
+        if remaining > 0:
+            lines.append(f"- ...and {remaining} more event(s).")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _normalize_alert_mention(mention: str | None) -> str:
@@ -409,6 +442,17 @@ class BossTimers(commands.Cog):
         self.update_message_id = sent_message.id
         return sent_message
 
+    async def _get_or_create_upcoming_message(self, update_channel):
+        if self.upcoming_message_id:
+            try:
+                return await update_channel.fetch_message(self.upcoming_message_id)
+            except discord.NotFound:
+                self.upcoming_message_id = None
+
+        sent_message = await update_channel.send("Fetching upcoming events...")
+        self.upcoming_message_id = sent_message.id
+        return sent_message
+
     async def _safe_edit_update_message(self, message, content: str, image_path: str | None = None):
         if image_path and os.path.exists(image_path):
             try:
@@ -463,10 +507,15 @@ class BossTimers(commands.Cog):
         async with self.UPDATE_MESSAGE_LOCKED:
             try:
                 message_to_edit = await self._get_or_create_update_message(update_channel)
+                upcoming_message_to_edit = await self._get_or_create_upcoming_message(update_channel)
                 await self._cleanup_expired_timers()
 
                 if not self.boss_timers:
                     await message_to_edit.edit(content="There are no upcoming bosses scheduled.", attachments=[])
+                    await upcoming_message_to_edit.edit(
+                        content=self._build_upcoming_events_section(now=time.time()),
+                        attachments=[],
+                    )
                     return
 
                 next_timestamp, boss_data = self._get_next_timer()
@@ -476,12 +525,15 @@ class BossTimers(commands.Cog):
                 next_boss_name = boss_data['name']
                 image_path = boss_data['image']
                 message_content = self._build_event_message_content(next_boss_name, next_timestamp, boss_data)
+                upcoming_content = self._build_upcoming_events_section(now=time.time())
 
                 if image_path and os.path.exists(image_path):
                     await self._safe_edit_update_message(message_to_edit, message_content, image_path=image_path)
                 else:
                     print("Image file not found for next Event, updating without image.")
                     await self._safe_edit_update_message(message_to_edit, message_content)
+
+                await self._safe_edit_update_message(upcoming_message_to_edit, upcoming_content)
 
                 alert_candidates = self._get_alert_candidates(now=time.time())
                 for alert_timestamp, alert_boss_data in alert_candidates:
