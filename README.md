@@ -68,6 +68,13 @@ You can create timers in three ways:
 - `/boss list` — show upcoming timers
 - `/boss delete <boss_name>` — delete timers by name
 
+### Boss image library for /boss add normal
+- Put reusable boss images in `data/boss_images/`.
+- Name files after the boss, for example: `bjorn.jpg`, `chaos_priest.jpg`.
+- When `/boss add normal` parses a boss name via OCR, the bot first checks `data/boss_images/` for a matching file name (case-insensitive, supports `.png`, `.jpg`, `.jpeg`, `.webp`).
+- If a match exists, that image is used for the event.
+- If no match exists, the bot falls back to the cropped OCR screenshot image.
+
 ### Static event format
 - `name`: a human-friendly event name, e.g. `Dragon Spawn`
 - `schedule`: recurring days, for example:
@@ -90,6 +97,7 @@ You can create timers in three ways:
 ## Notes
 - One-time OCR timer screenshots are automatically deleted when the event expires or is manually deleted.
 - Static event images are stored in `data/static_images/` and are deleted when the static event is deleted.
+- Boss library images in `data/boss_images/` are never auto-deleted by the bot.
 - On startup, the bot also removes leftover temporary PNG files from `data/`.
 
 ## Project Structure
@@ -104,6 +112,7 @@ DiscordOdinTimer/
 ├── data/
 │   ├── static_events.json
 │   ├── static_images/
+│   ├── boss_images/
 │   └── [temporary cropped screenshots]
 ├── cogs/
 │   └── boss_timers.py
