@@ -102,8 +102,6 @@ You can create timers in three ways:
 - `image`: optional uploaded image; if omitted, clipboard image is used
 - `alert_time`: optional alert timing between 60 and 3600 seconds (examples: `5m`, `15m`, `60`)
 - `alert_mention`: optional text mention for alerts like `@role`, `@everyone`, or `LW`
-- If `alert_mention` is blank, the bot uses `@here`
-- Plain text mentions are normalized to one leading `@`, so `LW`, `@LW`, and `@@LW` all become `@LW`
 - `extra_informations`: optional text shown under the event message
 
 ### Examples
