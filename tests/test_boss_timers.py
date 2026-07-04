@@ -144,3 +144,89 @@ def test_cleanup_existing_timer_does_not_delete_library_image_when_replaced(tmp_
 
     cog._cleanup_timer_image(existing_timer)
     assert library_image.exists()
+
+
+def test_build_alert_message_uses_custom_alert_mention():
+    cog = module.BossTimers.__new__(module.BossTimers)
+    content = cog._build_alert_message_content(
+        "Static Boss",
+        {"alert_mention": "<@&1234567890>"},
+    )
+    assert content.startswith("<@&1234567890> ")
+
+
+def test_build_alert_message_defaults_to_here():
+    cog = module.BossTimers.__new__(module.BossTimers)
+    content = cog._build_alert_message_content("Normal Boss", {"alert_seconds": 300})
+    assert content.startswith("@here ")
+
+
+def test_build_alert_message_normalizes_double_at_everyone():
+    cog = module.BossTimers.__new__(module.BossTimers)
+    content = cog._build_alert_message_content("Tester", {"alert_mention": "@@everyone"})
+    assert content.startswith("@everyone ")
+
+
+def test_normalize_alert_mention_supports_plain_role_names():
+    normalized = module.BossTimers._normalize_alert_mention("LW2")
+    assert normalized == "@LW2"
+
+
+def test_normalize_alert_mention_collapses_repeated_ats_for_roles():
+    normalized = module.BossTimers._normalize_alert_mention("@@@LW")
+    assert normalized == "@LW"
+
+
+def test_schedule_static_event_normalizes_alert_mention():
+    cog = module.BossTimers.__new__(module.BossTimers)
+    cog.boss_timers = {}
+    cog._get_next_occurrence = lambda event, after=None: 2000
+
+    event = {
+        "id": "event-1",
+        "name": "Static Boss",
+        "image": "data/static_images/test.png",
+        "schedule": "daily",
+        "time": "20:00",
+        "alert_mention": "@@everyone",
+    }
+
+    cog._schedule_static_event(event)
+    timer = cog.boss_timers[2000]
+    assert timer["alert_mention"] == "@everyone"
+
+
+def test_normalize_alert_mention_collapses_repeated_ats_for_everyone():
+    normalized = module.BossTimers._normalize_alert_mention("@@@everyone")
+    assert normalized == "@everyone"
+
+
+def test_read_attachment_with_retries_succeeds_after_transient_failure():
+    class _AttachmentStub:
+        def __init__(self):
+            self.calls = 0
+
+        async def read(self):
+            self.calls += 1
+            if self.calls < 2:
+                raise OSError("temporary network issue")
+            return b"ok"
+
+    cog = module.BossTimers.__new__(module.BossTimers)
+    payload = asyncio.run(cog._read_attachment_with_retries(_AttachmentStub(), max_attempts=3, initial_delay=0))
+    assert payload == b"ok"
+
+
+def test_read_attachment_with_retries_raises_after_max_attempts():
+    class _AttachmentStub:
+        async def read(self):
+            raise OSError("cdn unavailable")
+
+    cog = module.BossTimers.__new__(module.BossTimers)
+
+    try:
+        asyncio.run(cog._read_attachment_with_retries(_AttachmentStub(), max_attempts=2, initial_delay=0))
+    except RuntimeError as exc:
+        assert "after 2 attempts" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError after retry exhaustion")

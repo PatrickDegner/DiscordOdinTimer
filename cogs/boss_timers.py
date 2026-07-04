@@ -100,8 +100,38 @@ class BossTimers(commands.Cog):
 
         return content
 
+    @staticmethod
+    def _normalize_alert_mention(mention: str | None) -> str:
+        if mention is None:
+            return '@here'
+
+        text = str(mention).strip()
+        if not text:
+            return '@here'
+
+        # Keep Discord role/user mention tokens intact.
+        if text.startswith('<@') and text.endswith('>'):
+            return text
+
+        # Collapse any accidental repeated leading '@' for plain mentions.
+        text_no_at = text.lstrip('@')
+        if not text_no_at:
+            return '@here'
+
+        lowered = text_no_at.lower()
+        if lowered in {'here', '@here'}:
+            return '@here'
+        if lowered in {'everyone', '@everyone'}:
+            return '@everyone'
+
+        return f'@{text_no_at}'
+
     def _build_alert_message_content(self, boss_name: str, boss_data: dict | None) -> str:
-        return f"@here The next event **{boss_name}** starts soon."
+        mention = '@here'
+        if boss_data is not None:
+            mention = boss_data.get('alert_mention', '@here')
+        mention = self._normalize_alert_mention(mention)
+        return f"{mention} The next event **{boss_name}** starts soon."
 
     def _should_alert_now(self, timestamp: int, boss_data: dict | None, now: float | None = None) -> bool:
         if boss_data is None:
@@ -217,7 +247,15 @@ class BossTimers(commands.Cog):
             if self.static_events_file.exists():
                 with self.static_events_file.open('r', encoding='utf-8') as f:
                     events = json.load(f)
+                    events_changed = False
+                    for event in events:
+                        normalized_mention = self._normalize_alert_mention(event.get('alert_mention', '@here'))
+                        if event.get('alert_mention') != normalized_mention:
+                            event['alert_mention'] = normalized_mention
+                            events_changed = True
                     self.static_events = {event['id']: event for event in events}
+                    if events_changed:
+                        self._save_static_events()
             else:
                 self.static_events = {}
         except Exception as e:
@@ -311,6 +349,7 @@ class BossTimers(commands.Cog):
             'static_id': event['id'],
             'extra_informations': event.get('extra_informations', event.get('description', '')),
             'alert_seconds': event.get('alert_seconds', 300),
+            'alert_mention': self._normalize_alert_mention(event.get('alert_mention', '@here')),
         }
 
     def _schedule_all_static_events(self):
@@ -323,6 +362,28 @@ class BossTimers(commands.Cog):
                 if response.status != 200:
                     raise ValueError(f"Image download failed with status {response.status}")
                 return await response.read()
+
+    async def _read_attachment_with_retries(
+        self,
+        attachment: discord.Attachment,
+        max_attempts: int = 3,
+        initial_delay: float = 1.0,
+    ) -> bytes:
+        last_error = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await attachment.read()
+            except Exception as exc:
+                last_error = exc
+                if attempt >= max_attempts:
+                    break
+
+                # Backoff retries for transient Discord CDN/network errors.
+                delay = initial_delay * (2 ** (attempt - 1))
+                await asyncio.sleep(delay)
+
+        raise RuntimeError(f"Cannot read attachment after {max_attempts} attempts: {last_error}")
 
     async def _get_or_create_update_message(self, update_channel):
         if self.update_message_id:
@@ -417,11 +478,18 @@ class BossTimers(commands.Cog):
                     if alert_timestamp != next_timestamp:
                         continue
                     try:
+                        # Keep static timer mention in sync with persisted static event config.
+                        static_id = alert_boss_data.get('static_id')
+                        if static_id:
+                            static_event = self.static_events.get(static_id)
+                            if static_event:
+                                alert_boss_data['alert_mention'] = self._normalize_alert_mention(
+                                    static_event.get('alert_mention', '@here')
+                                )
+
                         alert_boss_data['sent_alert'] = True
                         alert_message_content = self._build_alert_message_content(alert_boss_data['name'], alert_boss_data)
-                        alert_message = await update_channel.send(alert_message_content)
-                        await asyncio.sleep(30)
-                        await alert_message.delete()
+                        await update_channel.send(alert_message_content, delete_after=30)
                     except Exception as exc:
                         print(f"Error sending temporary alert message: {exc}")
 
@@ -446,6 +514,7 @@ class BossTimers(commands.Cog):
         time="Time of day in 24-hour HH:MM format.",
         image="Image to use for this event. You can also paste or drop it here.",
         alert_time="Optional alert timing like 5m, 15m, 1s, or 90.",
+        alert_mention="Optional text mention like @role, @everyone, or LW. Defaults to @here.",
         extra_informations="Optional text to show beneath the event message.",
     )
     async def add_static_boss_command(
@@ -456,6 +525,7 @@ class BossTimers(commands.Cog):
         time: str,
         image: discord.Attachment | None = None,
         alert_time: str | None = None,
+        alert_mention: str | None = None,
         extra_informations: str | None = None,
     ):
         """Slash command to add a persistent static event."""
@@ -479,7 +549,7 @@ class BossTimers(commands.Cog):
         image_bytes = None
         if image is not None:
             try:
-                image_bytes = await image.read()
+                image_bytes = await self._read_attachment_with_retries(image)
             except Exception as exc:
                 await interaction.followup.send(
                     f"Unable to read the uploaded image: {exc}",
@@ -525,6 +595,7 @@ class BossTimers(commands.Cog):
             'time': f"{hours:02d}:{minutes:02d}",
             'image': str(filename),
             'alert_seconds': alert_seconds,
+            'alert_mention': self._normalize_alert_mention(alert_mention),
             'extra_informations': extra_informations or '',
         }
 
@@ -532,8 +603,9 @@ class BossTimers(commands.Cog):
         self._save_static_events()
         self._schedule_static_event(event)
 
+        alert_target = event['alert_mention']
         await interaction.followup.send(
-            f"✅ Static event '{name}' added for {schedule} at {hours:02d}:{minutes:02d} with alert timing {alert_seconds}s.",
+            f"✅ Static event '{name}' added for {schedule} at {hours:02d}:{minutes:02d} with alert timing {alert_seconds}s and mention {alert_target}.",
             ephemeral=True,
         )
 
@@ -559,7 +631,7 @@ class BossTimers(commands.Cog):
         image_to_process = None
         if image is not None:
             try:
-                image_bytes = await image.read()
+                image_bytes = await self._read_attachment_with_retries(image)
                 image_to_process = Image.open(io.BytesIO(image_bytes))
             except Exception as exc:
                 await interaction.followup.send(f"Unable to read the uploaded image: {exc}", ephemeral=True)
@@ -690,7 +762,7 @@ class BossTimers(commands.Cog):
         if image_attachment.content_type and image_attachment.content_type.startswith('image/'):
             await message.channel.send("Processing your image, please wait...")
             try:
-                image_bytes = await image_attachment.read()
+                image_bytes = await self._read_attachment_with_retries(image_attachment)
                 img = Image.open(io.BytesIO(image_bytes))
                 result_message, future_timestamp, boss_name = parse_boss_info(img)
 
