@@ -38,6 +38,30 @@ def test_alert_candidates_include_custom_static_alert_windows():
     assert [data["name"] for _, data in candidates] == ["Normal Boss", "Static Boss"]
 
 
+def test_build_upcoming_events_section_lists_only_next_24h_sorted():
+    cog = module.BossTimers.__new__(module.BossTimers)
+    timers = {
+        900: {"name": "Already Expired"},
+        1100: {"name": "Soon"},
+        1200: {"name": "Later"},
+        1100 + (24 * 60 * 60) + 5: {"name": "Beyond 24h"},
+    }
+
+    section = cog._build_upcoming_events_section(now=1000, timers=timers)
+
+    assert "Soon" in section
+    assert "Later" in section
+    assert "Already Expired" not in section
+    assert "Beyond 24h" not in section
+    assert section.index("Soon") < section.index("Later")
+
+
+def test_build_upcoming_events_section_handles_empty_window():
+    cog = module.BossTimers.__new__(module.BossTimers)
+    section = cog._build_upcoming_events_section(now=1000, timers={900: {"name": "Past"}})
+    assert "No upcoming events in the next 24 hours." in section
+
+
 def test_timer_loop_interval_is_stable_at_15_seconds():
     cog = module.BossTimers.__new__(module.BossTimers)
     assert cog.manage_boss_timers_task.seconds == 15
