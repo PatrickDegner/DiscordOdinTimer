@@ -6,7 +6,7 @@
     "time": "07:00",
     "image": "data/static_images/AMBossChain.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1419514734042021958>",
+    "alert_mention": "<@&1419514734042021958> <@&1423706043061637260>",
     "extra_informations": "Check the chat for possible photo! You are responsible for your own attendance!"
   },
   {
@@ -16,7 +16,7 @@
     "time": "19:00",
     "image": "data/static_images/PMBossChain.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1419514734042021958>",
+    "alert_mention": "<@&1419514734042021958> <@&1423706043061637260>",
     "extra_informations": "Check the chat for possible photo! You are responsible for your own attendance!"
   },
   {
@@ -26,7 +26,7 @@
     "time": "14:00",
     "image": "data/static_images/RealmInvader.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1419514734042021958>",
+    "alert_mention": "<@&1419514734042021958> <@&1423706043061637260>",
     "extra_informations": "If you still need anything related to accessories - you better show!"
   },
   {
@@ -36,7 +36,7 @@
     "time": "22:00",
     "image": "data/static_images/RealmInvader.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1419514734042021958>",
+    "alert_mention": "<@&1419514734042021958> <@&1423706043061637260>",
     "extra_informations": "If you still need anything related to accessories - you better show!"
   },
   {
@@ -56,7 +56,7 @@
     "time": "05:00",
     "image": "data/static_images/WorldDungeon.png",
     "alert_seconds": 900,
-    "alert_mention": "@here",
+    "alert_mention": "<@&1419514734042021958> <@&1423706043061637260>",
     "extra_informations": "Please pay attention to guild chat - we will be making callouts during it!"
   },
   {
