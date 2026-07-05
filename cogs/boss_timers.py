@@ -243,6 +243,18 @@ class BossTimers(commands.Cog):
     def _normalize_boss_image_key(self, name: str) -> str:
         return self._sanitize_filename(name).lower()
 
+    @staticmethod
+    def _normalize_image_path(path_value: str | None) -> str | None:
+        if path_value is None:
+            return None
+
+        text = str(path_value).strip()
+        if not text:
+            return text
+
+        # Store portable paths so persisted JSON works on both Windows and Linux.
+        return text.replace('\\', '/')
+
     def _find_library_boss_image(self, boss_name: str) -> str | None:
         image_dir = getattr(self, 'boss_image_library_dir', Path('data') / 'boss_images')
         if not image_dir.exists():
@@ -295,6 +307,11 @@ class BossTimers(commands.Cog):
                     events = json.load(f)
                     events_changed = False
                     for event in events:
+                        normalized_image = self._normalize_image_path(event.get('image'))
+                        if event.get('image') != normalized_image:
+                            event['image'] = normalized_image
+                            events_changed = True
+
                         normalized_mention = self._normalize_alert_mention(event.get('alert_mention', '@here'))
                         if event.get('alert_mention') != normalized_mention:
                             event['alert_mention'] = normalized_mention
@@ -690,7 +707,7 @@ class BossTimers(commands.Cog):
             'name': name,
             'schedule': schedule,
             'time': f"{hours:02d}:{minutes:02d}",
-            'image': str(filename),
+            'image': filename.as_posix(),
             'alert_seconds': alert_seconds,
             'alert_mention': self._normalize_alert_mention(alert_mention),
             'extra_informations': extra_informations or '',

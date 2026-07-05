@@ -226,6 +226,11 @@ def test_normalize_alert_mention_collapses_repeated_ats_for_everyone():
     assert normalized == "@everyone"
 
 
+def test_normalize_image_path_converts_backslashes_to_forward_slashes():
+    normalized = module.BossTimers._normalize_image_path(r"data\static_images\test.png")
+    assert normalized == "data/static_images/test.png"
+
+
 def test_read_attachment_with_retries_succeeds_after_transient_failure():
     class _AttachmentStub:
         def __init__(self):
