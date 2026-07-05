@@ -596,7 +596,7 @@ class BossTimers(commands.Cog):
 
                         alert_boss_data['sent_alert'] = True
                         alert_message_content = self._build_alert_message_content(alert_boss_data['name'], alert_boss_data)
-                        await update_channel.send(alert_message_content, delete_after=30)
+                        await update_channel.send(alert_message_content, delete_after=60)
                     except Exception as exc:
                         print(f"Error sending temporary alert message: {exc}")
 

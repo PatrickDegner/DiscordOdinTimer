@@ -6,7 +6,7 @@
     "time": "07:00",
     "image": "data/static_images/AMBossChain.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1522897837170491442>",
+    "alert_mention": "<@&1419514734042021958>",
     "extra_informations": "Check the chat for possible photo! You are responsible for your own attendance!"
   },
   {
@@ -16,7 +16,7 @@
     "time": "19:00",
     "image": "data/static_images/PMBossChain.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1522897837170491442>",
+    "alert_mention": "<@&1419514734042021958>",
     "extra_informations": "Check the chat for possible photo! You are responsible for your own attendance!"
   },
   {
@@ -26,7 +26,7 @@
     "time": "14:00",
     "image": "data/static_images/RealmInvader.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1522897837170491442>",
+    "alert_mention": "<@&1419514734042021958>",
     "extra_informations": "If you still need anything related to accessories - you better show!"
   },
   {
@@ -36,7 +36,7 @@
     "time": "22:00",
     "image": "data/static_images/RealmInvader.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1522897837170491442>",
+    "alert_mention": "<@&1419514734042021958>",
     "extra_informations": "If you still need anything related to accessories - you better show!"
   },
   {
@@ -46,7 +46,7 @@
     "time": "23:30",
     "image": "data/static_images/ShadowDungeon.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1522897837170491442>",
+    "alert_mention": "<@&1419514734042021958>",
     "extra_informations": "If you were unable to farm enough tokens, please write in our flood channels so guild members can help you with them."
   },
   {
@@ -66,7 +66,7 @@
     "time": "19:30",
     "image": "data/static_images/GuildDungeon.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1522897837170491442>",
+    "alert_mention": "<@&1419514734042021958>",
     "extra_informations": "Please check chat for start time!"
   },
   {
@@ -76,7 +76,7 @@
     "time": "21:20",
     "image": "data/static_images/GuildDungeon.png",
     "alert_seconds": 900,
-    "alert_mention": "<@&1522944973954093076>",
+    "alert_mention": "<@&1423706043061637260>",
     "extra_informations": "Please check chat for start time!"
   }
 ]
