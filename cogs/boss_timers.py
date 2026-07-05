@@ -799,7 +799,7 @@ class BossTimers(commands.Cog):
                     'name': boss_name_to_use,
                     'image': selected_image_path,
                     'sent_alert': False,
-                    'alert_seconds': 300,
+                    'alert_seconds': 600,
                     'extra_informations': '',
                     'is_custom_image': using_library_image,
                 }
@@ -915,7 +915,7 @@ class BossTimers(commands.Cog):
                             'name': boss_name,
                             'image': selected_image_path,
                             'sent_alert': False,
-                            'alert_seconds': 300,
+                            'alert_seconds': 600,
                             'description': '',
                             'is_custom_image': using_library_image,
                         }
