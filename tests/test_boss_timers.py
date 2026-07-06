@@ -307,3 +307,106 @@ def test_has_management_permission_returns_false_when_role_id_not_configured(mon
         user=SimpleNamespace(roles=[SimpleNamespace(id=1522906832492822688)])
     )
     assert module.BossTimers._has_management_permission(interaction) is False
+
+
+# --- One-time event tests ---
+
+def test_parse_date_accepts_iso_format():
+    assert module.BossTimers._parse_date("2026-12-25") == (2026, 12, 25)
+
+
+def test_parse_date_accepts_dot_format():
+    assert module.BossTimers._parse_date("25.12.2026") == (2026, 12, 25)
+
+
+def test_parse_date_accepts_slash_format():
+    assert module.BossTimers._parse_date("25/12/2026") == (2026, 12, 25)
+
+
+def test_parse_date_rejects_invalid_format():
+    try:
+        module.BossTimers._parse_date("25-12-2026")
+    except ValueError as exc:
+        assert "Invalid date format" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for unrecognised date format")
+
+
+def test_parse_date_rejects_invalid_calendar_date():
+    try:
+        module.BossTimers._parse_date("2026-13-01")
+    except ValueError as exc:
+        assert "Invalid date" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for invalid calendar date")
+
+
+def test_get_next_occurrence_returns_correct_timestamp_for_onetime_event():
+    cog = module.BossTimers.__new__(module.BossTimers)
+    # Use a date well in the future so it is never considered past.
+    event = {
+        'id': 'ot-1',
+        'name': 'One-Time Test',
+        'is_one_time': True,
+        'date': '2099-06-15',
+        'time': '20:00',
+    }
+    from datetime import datetime
+    expected_ts = int(datetime(2099, 6, 15, 20, 0).timestamp())
+    assert cog._get_next_occurrence(event) == expected_ts
+
+
+def test_get_next_occurrence_raises_for_past_onetime_event():
+    cog = module.BossTimers.__new__(module.BossTimers)
+    event = {
+        'id': 'ot-past',
+        'name': 'Past One-Time',
+        'is_one_time': True,
+        'date': '2000-01-01',
+        'time': '00:00',
+    }
+    try:
+        cog._get_next_occurrence(event)
+    except ValueError as exc:
+        assert "past" in str(exc).lower()
+    else:
+        raise AssertionError("Expected ValueError for past one-time event")
+
+
+def test_cleanup_expired_timers_removes_onetime_event_and_deletes_image(tmp_path):
+    cog = module.BossTimers.__new__(module.BossTimers)
+    image_path = tmp_path / "onetime_event.png"
+    image_path.write_bytes(b"test")
+
+    event_id = "ot-cleanup"
+    event = {
+        'id': event_id,
+        'name': 'One-Time Event',
+        'is_one_time': True,
+        'date': '2026-07-06',
+        'time': '10:00',
+        'image': str(image_path),
+    }
+
+    expired_timestamp = int(time.time()) - 5
+    cog.boss_timers = {
+        expired_timestamp: {
+            'name': 'One-Time Event',
+            'image': str(image_path),
+            'sent_alert': False,
+            'static_id': event_id,
+        }
+    }
+    cog.static_events = {event_id: event}
+
+    saved = []
+    cog._save_static_events = lambda: saved.append(True)
+    cog._schedule_static_event = lambda event, after=None: None  # should not be called
+
+    asyncio.run(cog._cleanup_expired_timers())
+
+    assert expired_timestamp not in cog.boss_timers
+    assert event_id not in cog.static_events
+    assert not image_path.exists()
+    assert saved, "_save_static_events should have been called"
+

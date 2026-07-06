@@ -7,6 +7,7 @@ A Discord bot for managing and tracking boss spawn timers in the Odin game. Uses
 - Image-based boss registration via OCR
 - Supports both DM image submissions and slash commands
 - Static recurring events with custom schedule and alert windows
+- One-time manual events with custom date, time, image, and alert settings
 - Real-time timer management and intelligent update frequency
 - Automatic cleanup
 
@@ -77,16 +78,18 @@ You can create timers in three ways:
 - Send a screenshot to the bot in DM (OCR extracts boss and remaining time)
 - Use `/boss add normal` with an image attachment
 - Use `/boss add static` for recurring events
+- Use `/boss add onetime` for a fixed date and time event that runs once
 
 ### Commands
 - `/boss add normal <image>` - create a one-time timer from OCR
 - `/boss add static <name> <schedule> <time> [image] [alert_time] [alert_mention] [extra_informations]` - create a recurring event
+- `/boss add onetime <name> <date> <time> [image] [alert_time] [alert_mention] [extra_informations]` - create a fixed one-time event
 - `/boss list` — show upcoming timers
 - `/boss delete <boss_name>` — delete timers by name
 
 ### Command permissions
 - `/boss list` can be used by everyone.
-- `/boss add normal`, `/boss add static`, and `/boss delete` require the role whose ID is set in `.env` as `ALLOWED_BOSS_MANAGER_ROLE_ID`.
+- `/boss add normal`, `/boss add static`, `/boss add onetime`, and `/boss delete` require the role whose ID is set in `.env` as `ALLOWED_BOSS_MANAGER_ROLE_ID`.
 - Example: `ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688`
 - If `ALLOWED_BOSS_MANAGER_ROLE_ID` is missing or set to `0`, add/delete commands are blocked for everyone.
 
@@ -111,6 +114,19 @@ You can create timers in three ways:
 - `alert_mention`: optional text mention for alerts like `@role`, `@everyone`, or `LW`
 - `extra_informations`: optional text shown under the event message
 
+### One-time event format
+- `name`: a human-friendly event name, e.g. `Castle Push`
+- `date`: one of these formats:
+  - `YYYY-MM-DD` for example `2026-07-12`
+  - `DD.MM.YYYY` for example `12.07.2026`
+  - `DD/MM/YYYY` for example `12/07/2026`
+- `time`: 24-hour time in `HH:MM` format, e.g. `19:30`
+- `image`: optional uploaded image; if omitted, clipboard image is used
+- `alert_time`: optional alert timing between 60 and 3600 seconds (examples: `5m`, `15m`, `60`)
+- `alert_mention`: optional text mention for alerts like `@role`, `@everyone`, or `LW`
+- `extra_informations`: optional text shown under the event message
+- The command rejects dates/times that are already in the past.
+
 ### Examples
 - `/boss add normal` (attach a screenshot)
 - `/boss add static Dragon Saturday 20:00`
@@ -119,10 +135,14 @@ You can create timers in three ways:
 - `/boss add static Dragon Saturday 20:00` + `alert_mention: LW`
 - `/boss add static ArenaBoss "Tuesday and Thursday" 18:15`
 - `/boss add static WeekendRaid weekends 12:00` + image + `alert_time: 15m`
+- `/boss add onetime CastlePush 2026-07-12 20:00`
+- `/boss add onetime CastlePush 12.07.2026 20:00` + `alert_mention: @everyone`
+- `/boss add onetime CastlePush 12/07/2026 20:00` + image + `alert_time: 10m`
 
 ## Notes
 - One-time OCR timer screenshots are automatically deleted when the event expires or is manually deleted.
 - Static event images are stored in `data/static_images/` and are deleted when the static event is deleted.
+- One-time event images are stored in `data/static_images/` and are deleted automatically after the event fires or if the event is deleted.
 - Boss library images in `data/boss_images/` are never auto-deleted by the bot.
 - On startup, the bot also removes leftover temporary PNG files from `data/`.
 
