@@ -224,7 +224,13 @@ class BossTimers(commands.Cog):
                     if expired_timer.get('static_id'):
                         static_event = self.static_events.get(expired_timer['static_id'])
                         if static_event:
-                            self._schedule_static_event(static_event, after=now)
+                            if static_event.get('is_one_time'):
+                                # Remove one-time events permanently after they fire.
+                                self._delete_file_if_exists(static_event.get('image'))
+                                del self.static_events[expired_timer['static_id']]
+                                self._save_static_events()
+                            else:
+                                self._schedule_static_event(static_event, after=now)
 
                     self._cleanup_timer_image(expired_timer)
                 except Exception as e:
@@ -372,8 +378,48 @@ class BossTimers(commands.Cog):
             raise ValueError("Invalid time format. Use HH:MM in 24-hour time.")
         return int(match.group(1)), int(match.group(2))
 
+    @staticmethod
+    def _parse_date(date_text: str):
+        """Parse a date string into (year, month, day).
+
+        Accepted formats: YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY.
+        Raises ValueError on unrecognised format or invalid calendar date.
+        """
+        text = date_text.strip()
+        # YYYY-MM-DD
+        m = re.fullmatch(r'(\d{4})-(\d{2})-(\d{2})', text)
+        if m:
+            year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        else:
+            # DD.MM.YYYY or DD/MM/YYYY
+            m = re.fullmatch(r'(\d{2})[./](\d{2})[./](\d{4})', text)
+            if m:
+                day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            else:
+                raise ValueError(
+                    "Invalid date format. Use YYYY-MM-DD, DD.MM.YYYY, or DD/MM/YYYY."
+                )
+        try:
+            datetime(year, month, day)  # validate calendar date
+        except ValueError:
+            raise ValueError(f"Invalid date: {date_text!r}. Check day/month values.")
+        return year, month, day
+
     def _get_next_occurrence(self, event: dict, after: float | None = None):
         after_ts = after if after is not None else time.time()
+
+        # One-time events have a fixed absolute date rather than a recurring schedule.
+        if event.get('is_one_time'):
+            year, month, day = self._parse_date(event['date'])
+            hour, minute = self._parse_time(event['time'])
+            event_dt = datetime(year, month, day, hour, minute)
+            event_ts = int(event_dt.timestamp())
+            if event_ts <= after_ts:
+                raise ValueError(
+                    f"One-time event '{event.get('name')}' is scheduled in the past ({event['date']} {event['time']})."
+                )
+            return event_ts
+
         after_dt = datetime.fromtimestamp(after_ts)
         hour, minute = self._parse_time(event['time'])
         weekdays = self._parse_schedule_days(event['schedule'])
@@ -720,6 +766,126 @@ class BossTimers(commands.Cog):
         alert_target = event['alert_mention']
         await interaction.followup.send(
             f"✅ Static event '{name}' added for {schedule} at {hours:02d}:{minutes:02d} with alert timing {alert_seconds}s and mention {alert_target}.",
+            ephemeral=True,
+        )
+
+    @add_group.command(name="onetime", description="Add a one-time event that fires once and then removes itself.")
+    @app_commands.describe(
+        name="Name of the event.",
+        date="Date in YYYY-MM-DD, DD.MM.YYYY, or DD/MM/YYYY format.",
+        time="Time of day in 24-hour HH:MM format.",
+        image="Image to use for this event. You can also paste or drop it here.",
+        alert_time="Optional alert timing like 5m, 15m, 1s, or 90.",
+        alert_mention="Optional text mention like @role, @everyone, or LW. Defaults to @here.",
+        extra_informations="Optional text to show beneath the event message.",
+    )
+    async def add_onetime_boss_command(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        date: str,
+        time: str,
+        image: discord.Attachment | None = None,
+        alert_time: str | None = None,
+        alert_mention: str | None = None,
+        extra_informations: str | None = None,
+    ):
+        """Slash command to add a one-time event that fires once and then auto-removes itself."""
+        if not self._has_management_permission(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have the required boss management role to use this command.",
+                ephemeral=True,
+            )
+            return
+
+        if interaction.channel_id != BOSS_COMMAND_CHANNEL_ID:
+            await interaction.response.send_message(
+                f"❌ Please use this command in the <#{BOSS_COMMAND_CHANNEL_ID}> channel.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        try:
+            year, month, day = self._parse_date(date)
+            hours, minutes = self._parse_time(time)
+            alert_seconds = self._parse_alert_time(alert_time)
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+
+        # Reject dates that are already in the past.
+        from datetime import datetime as _dt
+        event_dt = _dt(year, month, day, hours, minutes)
+        if event_dt.timestamp() <= _dt.now().timestamp():
+            await interaction.followup.send(
+                f"❌ The date/time {date} {hours:02d}:{minutes:02d} is already in the past.",
+                ephemeral=True,
+            )
+            return
+
+        image_bytes = None
+        if image is not None:
+            try:
+                image_bytes = await self._read_attachment_with_retries(image)
+            except Exception as exc:
+                await interaction.followup.send(
+                    f"Unable to read the uploaded image: {exc}",
+                    ephemeral=True,
+                )
+                return
+        else:
+            try:
+                clipboard_image = ImageGrab.grabclipboard()
+                if not clipboard_image:
+                    await interaction.followup.send("No image was found in the clipboard.", ephemeral=True)
+                    return
+                image_bytes = io.BytesIO()
+                clipboard_image.save(image_bytes, format='PNG')
+                image_bytes = image_bytes.getvalue()
+            except Exception as exc:
+                await interaction.followup.send(
+                    f"Unable to read the clipboard image: {exc}",
+                    ephemeral=True,
+                )
+                return
+
+        try:
+            img = Image.open(io.BytesIO(image_bytes))
+            img.verify()
+            img = Image.open(io.BytesIO(image_bytes))
+        except Exception as exc:
+            await interaction.followup.send(
+                f"Unable to validate the image: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        sanitized_name = self._sanitize_filename(name)
+        event_id = str(uuid.uuid4())
+        filename = self.static_image_dir / f"onetime_{sanitized_name}_{event_id}.png"
+        img.save(filename)
+
+        event = {
+            'id': event_id,
+            'name': name,
+            'is_one_time': True,
+            'date': f"{year:04d}-{month:02d}-{day:02d}",
+            'time': f"{hours:02d}:{minutes:02d}",
+            'image': filename.as_posix(),
+            'alert_seconds': alert_seconds,
+            'alert_mention': self._normalize_alert_mention(alert_mention),
+            'extra_informations': extra_informations or '',
+        }
+
+        self.static_events[event_id] = event
+        self._save_static_events()
+        self._schedule_static_event(event)
+
+        alert_target = event['alert_mention']
+        await interaction.followup.send(
+            f"✅ One-time event '{name}' added for {year:04d}-{month:02d}-{day:02d} at {hours:02d}:{minutes:02d} with alert timing {alert_seconds}s and mention {alert_target}.",
             ephemeral=True,
         )
 
