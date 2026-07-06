@@ -226,7 +226,9 @@ class BossTimers(commands.Cog):
                         if static_event:
                             if static_event.get('is_one_time'):
                                 # Remove one-time events permanently after they fire.
-                                self._delete_file_if_exists(static_event.get('image'))
+                                # Skip deletion if the image is shared with another event.
+                                if not static_event.get('is_reused_image'):
+                                    self._delete_file_if_exists(static_event.get('image'))
                                 del self.static_events[expired_timer['static_id']]
                                 self._save_static_events()
                             else:
@@ -263,6 +265,23 @@ class BossTimers(commands.Cog):
 
     def _find_library_boss_image(self, boss_name: str) -> str | None:
         image_dir = getattr(self, 'boss_image_library_dir', Path('data') / 'boss_images')
+        if not image_dir.exists():
+            return None
+
+        target_key = self._normalize_boss_image_key(boss_name)
+        allowed_extensions = {'.png', '.jpg', '.jpeg', '.webp'}
+
+        for candidate in image_dir.iterdir():
+            if not candidate.is_file() or candidate.suffix.lower() not in allowed_extensions:
+                continue
+            if self._normalize_boss_image_key(candidate.stem) == target_key:
+                return str(candidate)
+
+        return None
+
+    def _find_static_boss_image(self, boss_name: str) -> str | None:
+        """Search data/static_images/ for a file whose stem matches boss_name."""
+        image_dir = getattr(self, 'static_image_dir', Path('data') / 'static_images')
         if not image_dir.exists():
             return None
 
@@ -825,55 +844,66 @@ class BossTimers(commands.Cog):
             )
             return
 
-        image_bytes = None
-        if image is not None:
-            try:
-                image_bytes = await self._read_attachment_with_retries(image)
-            except Exception as exc:
-                await interaction.followup.send(
-                    f"Unable to read the uploaded image: {exc}",
-                    ephemeral=True,
-                )
-                return
-        else:
-            try:
-                clipboard_image = ImageGrab.grabclipboard()
-                if not clipboard_image:
-                    await interaction.followup.send("No image was found in the clipboard.", ephemeral=True)
-                    return
-                image_bytes = io.BytesIO()
-                clipboard_image.save(image_bytes, format='PNG')
-                image_bytes = image_bytes.getvalue()
-            except Exception as exc:
-                await interaction.followup.send(
-                    f"Unable to read the clipboard image: {exc}",
-                    ephemeral=True,
-                )
-                return
-
-        try:
-            img = Image.open(io.BytesIO(image_bytes))
-            img.verify()
-            img = Image.open(io.BytesIO(image_bytes))
-        except Exception as exc:
-            await interaction.followup.send(
-                f"Unable to validate the image: {exc}",
-                ephemeral=True,
-            )
-            return
-
-        sanitized_name = self._sanitize_filename(name)
         event_id = str(uuid.uuid4())
-        filename = self.static_image_dir / f"onetime_{sanitized_name}_{event_id}.png"
-        img.save(filename)
+
+        # Prefer an existing image from boss_images/ or static_images/ over the upload.
+        preexisting_image = self._find_library_boss_image(name) or self._find_static_boss_image(name)
+
+        if preexisting_image:
+            selected_image_path = preexisting_image
+            is_reused_image = True
+        else:
+            image_bytes = None
+            if image is not None:
+                try:
+                    image_bytes = await self._read_attachment_with_retries(image)
+                except Exception as exc:
+                    await interaction.followup.send(
+                        f"Unable to read the uploaded image: {exc}",
+                        ephemeral=True,
+                    )
+                    return
+            else:
+                try:
+                    clipboard_image = ImageGrab.grabclipboard()
+                    if not clipboard_image:
+                        await interaction.followup.send("No image was found in the clipboard.", ephemeral=True)
+                        return
+                    image_bytes = io.BytesIO()
+                    clipboard_image.save(image_bytes, format='PNG')
+                    image_bytes = image_bytes.getvalue()
+                except Exception as exc:
+                    await interaction.followup.send(
+                        f"Unable to read the clipboard image: {exc}",
+                        ephemeral=True,
+                    )
+                    return
+
+            try:
+                img = Image.open(io.BytesIO(image_bytes))
+                img.verify()
+                img = Image.open(io.BytesIO(image_bytes))
+            except Exception as exc:
+                await interaction.followup.send(
+                    f"Unable to validate the image: {exc}",
+                    ephemeral=True,
+                )
+                return
+
+            sanitized_name = self._sanitize_filename(name)
+            filename = self.static_image_dir / f"onetime_{sanitized_name}_{event_id}.png"
+            img.save(filename)
+            selected_image_path = filename.as_posix()
+            is_reused_image = False
 
         event = {
             'id': event_id,
             'name': name,
             'is_one_time': True,
+            'is_reused_image': is_reused_image,
             'date': f"{year:04d}-{month:02d}-{day:02d}",
             'time': f"{hours:02d}:{minutes:02d}",
-            'image': filename.as_posix(),
+            'image': selected_image_path,
             'alert_seconds': alert_seconds,
             'alert_mention': self._normalize_alert_mention(alert_mention),
             'extra_informations': extra_informations or '',
@@ -1032,7 +1062,8 @@ class BossTimers(commands.Cog):
             for event_id in static_ids_to_remove:
                 event = self.static_events.pop(event_id, None)
                 if event:
-                    self._delete_file_if_exists(event.get('image'))
+                    if not event.get('is_reused_image'):
+                        self._delete_file_if_exists(event.get('image'))
                     deleted_timers += 1
 
             if static_ids_to_remove:
