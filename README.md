@@ -117,6 +117,8 @@ You can create timers in three ways:
 ### One-time event format
 - `name`: a human-friendly event name, e.g. `Castle Push`
 - `date`: one of these formats:
+  - `today`
+  - `tomorrow`
   - `YYYY-MM-DD` for example `2026-07-12`
   - `DD.MM.YYYY` for example `12.07.2026`
   - `DD/MM/YYYY` for example `12/07/2026`
@@ -136,6 +138,8 @@ You can create timers in three ways:
 - `/boss add static ArenaBoss "Tuesday and Thursday" 18:15`
 - `/boss add static WeekendRaid weekends 12:00` + image + `alert_time: 15m`
 - `/boss add onetime CastlePush 2026-07-12 20:00`
+- `/boss add onetime CastlePush today 20:00`
+- `/boss add onetime CastlePush tomorrow 20:00`
 - `/boss add onetime CastlePush 12.07.2026 20:00` + `alert_mention: @everyone`
 - `/boss add onetime CastlePush 12/07/2026 20:00` + image + `alert_time: 10m`
 

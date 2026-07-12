@@ -1,6 +1,7 @@
 import importlib.util
 import asyncio
 import time
+from datetime import datetime as _datetime, timedelta as _timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -321,6 +322,31 @@ def test_parse_date_accepts_dot_format():
 
 def test_parse_date_accepts_slash_format():
     assert module.BossTimers._parse_date("25/12/2026") == (2026, 12, 25)
+
+
+def test_parse_date_accepts_today_keyword(monkeypatch):
+    fixed_now = _datetime(2026, 7, 12, 10, 30)
+
+    class _FakeDatetime(_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(module, "datetime", _FakeDatetime)
+    assert module.BossTimers._parse_date("today") == (2026, 7, 12)
+
+
+def test_parse_date_accepts_tomorrow_keyword(monkeypatch):
+    fixed_now = _datetime(2026, 7, 12, 10, 30)
+
+    class _FakeDatetime(_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(module, "datetime", _FakeDatetime)
+    expected = fixed_now + _timedelta(days=1)
+    assert module.BossTimers._parse_date("tomorrow") == (expected.year, expected.month, expected.day)
 
 
 def test_parse_date_rejects_invalid_format():

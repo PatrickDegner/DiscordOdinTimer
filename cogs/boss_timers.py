@@ -401,10 +401,21 @@ class BossTimers(commands.Cog):
     def _parse_date(date_text: str):
         """Parse a date string into (year, month, day).
 
-        Accepted formats: YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY.
+        Accepted formats: YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY, or
+        keywords: today, tomorrow.
         Raises ValueError on unrecognised format or invalid calendar date.
         """
         text = date_text.strip()
+        lowered = text.lower()
+
+        if lowered == 'today':
+            now = datetime.now()
+            return now.year, now.month, now.day
+
+        if lowered == 'tomorrow':
+            tomorrow = datetime.now() + timedelta(days=1)
+            return tomorrow.year, tomorrow.month, tomorrow.day
+
         # YYYY-MM-DD
         m = re.fullmatch(r'(\d{4})-(\d{2})-(\d{2})', text)
         if m:
@@ -791,7 +802,7 @@ class BossTimers(commands.Cog):
     @add_group.command(name="onetime", description="Add a one-time event that fires once and then removes itself.")
     @app_commands.describe(
         name="Name of the event.",
-        date="Date in YYYY-MM-DD, DD.MM.YYYY, or DD/MM/YYYY format.",
+        date="Date in YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY, or 'today'/'tomorrow'.",
         time="Time of day in 24-hour HH:MM format.",
         image="Image to use for this event. You can also paste or drop it here.",
         alert_time="Optional alert timing like 5m, 15m, 1s, or 90.",
