@@ -1,14 +1,9 @@
-import importlib.util
 import asyncio
 import time
 from datetime import datetime as _datetime, timedelta as _timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("boss_timers_module", ROOT / "cogs" / "boss_timers.py")
-module = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(module)
+from helpers import boss_timers_module as module
 
 
 def test_alert_state_tracking_and_default_timer():
@@ -369,16 +364,18 @@ def test_parse_date_rejects_invalid_calendar_date():
 
 def test_get_next_occurrence_returns_correct_timestamp_for_onetime_event():
     cog = module.BossTimers.__new__(module.BossTimers)
-    # Use a date well in the future so it is never considered past.
+    # Pin the zone so the expectation does not depend on the host's clock settings.
     event = {
         'id': 'ot-1',
         'name': 'One-Time Test',
         'is_one_time': True,
         'date': '2099-06-15',
         'time': '20:00',
+        'timezone': 'Europe/Berlin',
     }
     from datetime import datetime
-    expected_ts = int(datetime(2099, 6, 15, 20, 0).timestamp())
+    from zoneinfo import ZoneInfo
+    expected_ts = int(datetime(2099, 6, 15, 20, 0, tzinfo=ZoneInfo('Europe/Berlin')).timestamp())
     assert cog._get_next_occurrence(event) == expected_ts
 
 

@@ -68,15 +68,5 @@
     "alert_seconds": 900,
     "alert_mention": "<@&1419514734042021958>",
     "extra_informations": "Please check chat for start time!"
-  },
-  {
-    "id": "cfd3359b-48cf-4b1d-bc4e-607c958be2a1",
-    "name": "Guild Dungeon LW2",
-    "schedule": "Tuesday",
-    "time": "21:20",
-    "image": "data/static_images/GuildDungeon.png",
-    "alert_seconds": 900,
-    "alert_mention": "<@&1423706043061637260>",
-    "extra_informations": "Please check chat for start time!"
   }
 ]

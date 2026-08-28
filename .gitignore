@@ -62,6 +62,9 @@ Thumbs.db
 # Generated/temporary images created by the bot
 data/cropped_screenshot_*.png
 
+# Local OCR test screenshots and the crops produced by tools/ocr_check.py
+tests/images/
+
 # Python virtualenv and packaging
 pip-wheel-metadata/
 __pypackages__/

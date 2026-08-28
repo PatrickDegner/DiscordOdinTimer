@@ -11,27 +11,212 @@ import time
 from datetime import datetime, timedelta
 import re
 import uuid
-from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 from dotenv import load_dotenv
 import aiohttp
 
 # Load environment variables
 load_dotenv()
 
-# Load configuration from the parent directory when present
-config_path = Path('config') / 'config.json'
-try:
-    with config_path.open('r', encoding='utf-8') as f:
-        config = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    config = {}
-
 # Get BOSS_COMMAND_CHANNEL_ID from environment
 BOSS_COMMAND_CHANNEL_ID = int(os.getenv('BOSS_COMMAND_CHANNEL_ID', 0))
 ALLOWED_BOSS_MANAGER_ROLE_ID = int(os.getenv('ALLOWED_BOSS_MANAGER_ROLE_ID', 0))
 
+ALL_TIMEZONE_NAMES = tuple(sorted(available_timezones()))
+
+
+def resolve_zone(name: str | None):
+    """Returns a ZoneInfo for an IANA name, or None to use the host's local time."""
+    if not name or not str(name).strip():
+        return None
+    try:
+        return ZoneInfo(str(name).strip())
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        raise ValueError(
+            f"Unknown timezone '{name}'. Use an IANA name like Europe/Berlin or America/New_York."
+        )
+
+
+try:
+    DEFAULT_ZONE = resolve_zone(os.getenv('TIMEZONE'))
+except ValueError as exc:
+    print(f"Invalid TIMEZONE in .env, falling back to server local time: {exc}")
+    DEFAULT_ZONE = None
+
 # Import OCR functions from the ocr directory
-from ocr import parse_boss_info
+from ocr import MAX_TIMER_SECONDS, parse_boss_info
+
+
+class OcrTimeCorrectionModal(discord.ui.Modal, title="Correct remaining time"):
+    """Lets the uploader fix a misread timer before it is registered."""
+
+    remaining = discord.ui.TextInput(
+        label="Remaining time",
+        placeholder="e.g. 1h30m, 45m, or 90 (minutes)",
+        max_length=32,
+    )
+
+    def __init__(self, view: 'OcrConfirmView'):
+        super().__init__()
+        self.view_ref = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            seconds = BossTimers._parse_duration_seconds(str(self.remaining.value))
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+
+        await self.view_ref.finalize(interaction, int(time.time() + seconds))
+
+
+class OcrConfirmView(discord.ui.View):
+    """Confirmation step so a misread OCR result never silently creates a timer."""
+
+    def __init__(self, cog: 'BossTimers', boss_name, future_timestamp, cropped_image, requester_id, timeout=180):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.boss_name = boss_name
+        self.future_timestamp = future_timestamp
+        self.cropped_image = cropped_image
+        self.requester_id = requester_id
+        self.message = None
+        self.completed = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "❌ Only the person who uploaded this image can confirm it.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    def _disable_all(self):
+        for child in self.children:
+            child.disabled = True
+
+    async def finalize(self, interaction: discord.Interaction, future_timestamp: int):
+        self.completed = True
+        self._disable_all()
+        self.stop()
+
+        try:
+            image_path, using_library_image = await self.cog._register_ocr_timer(
+                self.boss_name,
+                future_timestamp,
+                self.cropped_image,
+            )
+        except Exception as exc:
+            await interaction.response.edit_message(
+                content=f"❌ Failed to add the timer: {exc}",
+                view=self,
+            )
+            return
+
+        content = (
+            f"✅ Added **{self.boss_name}** — spawns <t:{future_timestamp}:F> "
+            f"which is <t:{future_timestamp}:R>."
+        )
+        if using_library_image:
+            content += f"\nUsing image from {image_path}."
+
+        await interaction.response.edit_message(content=content, view=self)
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.finalize(interaction, self.future_timestamp)
+
+    @discord.ui.button(label="Correct time", style=discord.ButtonStyle.primary, emoji="✏️")
+    async def correct_time(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(OcrTimeCorrectionModal(self))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.completed = True
+        self._disable_all()
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"❌ Discarded the OCR result for **{self.boss_name}**. No timer was added.",
+            view=self,
+        )
+
+    async def on_timeout(self):
+        if self.completed or self.message is None:
+            return
+        self._disable_all()
+        try:
+            await self.message.edit(
+                content=f"⌛ Confirmation for **{self.boss_name}** timed out. No timer was added.",
+                view=self,
+            )
+        except discord.HTTPException:
+            pass
+
+
+class ConfirmDeleteView(discord.ui.View):
+    """Shows what /boss delete would remove before anything is destroyed."""
+
+    def __init__(self, cog: 'BossTimers', boss_name: str, requester_id: int, timeout=60):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.boss_name = boss_name
+        self.requester_id = requester_id
+        self.message = None
+        self.completed = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "❌ Only the person who ran the command can confirm it.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    def _disable_all(self):
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.completed = True
+        self._disable_all()
+        self.stop()
+
+        async with self.cog.UPDATE_MESSAGE_LOCKED:
+            deleted_timers, deleted_events = self.cog._delete_boss_entries(self.boss_name)
+
+        await interaction.response.edit_message(
+            content=(
+                f"✅ Deleted {deleted_timers} timer(s) and {deleted_events} "
+                f"static/one-time event(s) for '{self.boss_name}'."
+            ),
+            view=self,
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.completed = True
+        self._disable_all()
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"❌ Cancelled. Nothing was deleted for '{self.boss_name}'.",
+            view=self,
+        )
+
+    async def on_timeout(self):
+        if self.completed or self.message is None:
+            return
+        self._disable_all()
+        try:
+            await self.message.edit(
+                content=f"⌛ Delete confirmation for '{self.boss_name}' timed out. Nothing was deleted.",
+                view=self,
+            )
+        except discord.HTTPException:
+            pass
+
 
 class BossTimers(commands.Cog):
     def __init__(self, bot):
@@ -42,13 +227,108 @@ class BossTimers(commands.Cog):
         self.last_update_event_key = None
         self.UPDATE_MESSAGE_LOCKED = asyncio.Lock()
         self.static_events_file = Path('data') / 'static_events.json'
+        self.timers_file = Path('data') / 'timers.json'
         self.static_image_dir = Path('data') / 'static_images'
         self.boss_image_library_dir = Path('data') / 'boss_images'
         self.static_image_dir.mkdir(parents=True, exist_ok=True)
         self.boss_image_library_dir.mkdir(parents=True, exist_ok=True)
         self.static_events = {}
+        self._load_timers()
         self._load_static_events()
         self._schedule_all_static_events()
+
+    @staticmethod
+    def _zone_label(zone) -> str:
+        return str(zone) if zone is not None else 'server local time'
+
+    @staticmethod
+    def _naive_to_timestamp(naive_dt: datetime, zone) -> int:
+        """Interprets a wall-clock datetime as belonging to the given zone."""
+        if zone is None:
+            return int(naive_dt.timestamp())
+        return int(naive_dt.replace(tzinfo=zone).timestamp())
+
+    @staticmethod
+    def _wall_clock_now(zone) -> datetime:
+        if zone is None:
+            return datetime.now()
+        return datetime.now(zone).replace(tzinfo=None)
+
+    @staticmethod
+    def _wall_clock_at(timestamp: float, zone) -> datetime:
+        if zone is None:
+            return datetime.fromtimestamp(timestamp)
+        return datetime.fromtimestamp(timestamp, zone).replace(tzinfo=None)
+
+    def _event_zone(self, event: dict):
+        """Zone an event was created in; falls back to the configured default."""
+        try:
+            zone = resolve_zone(event.get('timezone'))
+        except ValueError:
+            return DEFAULT_ZONE
+        return zone if zone is not None else DEFAULT_ZONE
+
+    def _known_event_names(self) -> list[str]:
+        """Every name that /boss edit or /boss delete could act on."""
+        names = {data['name'] for data in self.boss_timers.values() if data.get('name')}
+        names.update(event['name'] for event in self.static_events.values() if event.get('name'))
+        return sorted(names, key=str.lower)
+
+    async def _boss_name_autocomplete(self, interaction: discord.Interaction, current: str):
+        typed = current.strip().lower()
+        matches = [name for name in self._known_event_names() if typed in name.lower()][:25]
+        return [app_commands.Choice(name=name, value=name) for name in matches]
+
+    def _collect_delete_targets(self, boss_name: str) -> tuple[list[tuple[int, dict]], list[str]]:
+        """Returns the timers and static event ids that /boss delete would remove."""
+        target = boss_name.strip().lower()
+        timers = sorted(
+            (timestamp, data) for timestamp, data in self.boss_timers.items()
+            if data.get('name', '').strip().lower() == target
+        )
+        static_ids = [
+            event_id for event_id, event in self.static_events.items()
+            if event.get('name', '').strip().lower() == target
+        ]
+        return timers, static_ids
+
+    def _delete_boss_entries(self, boss_name: str) -> tuple[int, int]:
+        """Removes matching timers and static events. Returns (timers, static events)."""
+        timers, static_ids = self._collect_delete_targets(boss_name)
+
+        for timestamp, _ in timers:
+            removed_timer = self.boss_timers.pop(timestamp, None)
+            self._cleanup_timer_image(removed_timer)
+
+        for event_id in static_ids:
+            event = self.static_events.pop(event_id, None)
+            if event and not event.get('is_reused_image'):
+                self._delete_file_if_exists(event.get('image'))
+
+        if static_ids:
+            self._save_static_events()
+        if timers:
+            self._save_timers()
+
+        self.last_update_event_key = None
+        return len(timers), len(static_ids)
+
+    @staticmethod
+    def _build_delete_preview(boss_name: str, timers: list, static_ids: list) -> str:
+        lines = [f"⚠️ This will delete **{len(timers)}** timer(s) and **{len(static_ids)}** static/one-time event(s) named **{boss_name}**:"]
+        for timestamp, data in timers[:10]:
+            lines.append(f"- Timer: <t:{timestamp}:F> (<t:{timestamp}:R>)")
+        if len(timers) > 10:
+            lines.append(f"- ...and {len(timers) - 10} more timer(s).")
+        if static_ids:
+            lines.append(f"- The saved event definition will be removed, so it will stop recurring.")
+        lines.append("\nThis cannot be undone. Confirm?")
+        return "\n".join(lines)
+
+    async def _timezone_autocomplete(self, interaction: discord.Interaction, current: str):
+        typed = current.strip().lower()
+        matches = [name for name in ALL_TIMEZONE_NAMES if typed in name.lower()][:25]
+        return [app_commands.Choice(name=name, value=name) for name in matches]
 
     @staticmethod
     def _parse_alert_time(alert_time: str | None) -> int:
@@ -86,10 +366,70 @@ class BossTimers(commands.Cog):
         raise ValueError("Alert time must be between 60 and 3600 seconds (1 to 60 minutes).")
 
     @staticmethod
+    def _parse_duration_seconds(text: str | None) -> int:
+        """Parses '1h30m', '45m', '90' (minutes) or '2h 5m 10s' into seconds."""
+        if text is None:
+            raise ValueError("Enter a duration like 1h30m, 45m, or 90.")
+
+        cleaned = str(text).strip().lower().replace(' ', '')
+        if not cleaned:
+            raise ValueError("Enter a duration like 1h30m, 45m, or 90.")
+
+        if cleaned.isdigit():
+            total = int(cleaned) * 60
+        else:
+            if not re.fullmatch(r'(?:\d+[hms])+', cleaned):
+                raise ValueError("Invalid duration. Use values like 1h30m, 45m, or 90.")
+            unit_seconds = {'h': 3600, 'm': 60, 's': 1}
+            total = sum(
+                int(value) * unit_seconds[unit]
+                for value, unit in re.findall(r'(\d+)([hms])', cleaned)
+            )
+
+        if total <= 0:
+            raise ValueError("Duration must be greater than zero.")
+        if total > MAX_TIMER_SECONDS:
+            raise ValueError(f"Duration must not exceed {MAX_TIMER_SECONDS // 3600} hours.")
+        return total
+
+    @staticmethod
     def _crop_image_for_timer(image: Image.Image) -> Image.Image:
         crop_bottom_percentage = 0.14
         cropped_height = int(image.height * (1 - crop_bottom_percentage))
         return image.crop((0, 0, image.width, cropped_height))
+
+    @staticmethod
+    def _image_to_discord_file(image: Image.Image, filename: str = 'preview.png') -> discord.File:
+        buffer = io.BytesIO()
+        image.save(buffer, format='PNG')
+        buffer.seek(0)
+        return discord.File(buffer, filename=filename)
+
+    @staticmethod
+    def _build_ocr_preview_content(boss_name: str, future_timestamp: int, library_image_path: str | None = None) -> str:
+        content = (
+            f"\U0001F50E OCR result: **{boss_name}**\n"
+            f"Spawns <t:{future_timestamp}:F> which is <t:{future_timestamp}:R>.\n"
+        )
+        if library_image_path:
+            content += f"Using the saved image `{library_image_path}` instead of the screenshot.\n"
+        content += (
+            "Press **Confirm** to add the timer, **Correct time** to fix a misread, "
+            "or **Cancel** to discard."
+        )
+        return content
+
+    def _build_ocr_preview(self, boss_name: str, future_timestamp: int, cropped_image: Image.Image):
+        """Preview shows the image that will actually be posted, not always the crop."""
+        library_image_path = self._find_library_boss_image(boss_name)
+        if library_image_path and os.path.exists(library_image_path):
+            preview_file = discord.File(library_image_path, filename=os.path.basename(library_image_path))
+            normalized = self._normalize_image_path(library_image_path)
+        else:
+            preview_file = self._image_to_discord_file(cropped_image)
+            normalized = None
+
+        return self._build_ocr_preview_content(boss_name, future_timestamp, normalized), preview_file
 
     def _build_event_message_content(self, boss_name: str, timestamp: int, boss_data: dict | None) -> str:
         if boss_data is None:
@@ -177,13 +517,6 @@ class BossTimers(commands.Cog):
         alert_seconds = boss_data.get('alert_seconds', 300)
         return 0 < time_until_spawn <= alert_seconds
 
-    def _should_send_alert(self, timestamp: int, boss_data: dict | None, now: float | None = None) -> bool:
-        if boss_data is None:
-            return False
-        if boss_data.get('sent_alert', False):
-            return False
-        return self._should_alert_now(timestamp, boss_data, now=now)
-
     def _get_alert_candidates(self, now: float | None = None, timers: dict | None = None) -> list[tuple[int, dict]]:
         timers = timers if timers is not None else self.boss_timers
         now_ts = now if now is not None else time.time()
@@ -214,6 +547,7 @@ class BossTimers(commands.Cog):
         
     async def _cleanup_expired_timers(self):
         now = time.time()
+        removed_any = False
         for ts in list(self.boss_timers.keys()):
             if ts < now:
                 try:
@@ -221,6 +555,7 @@ class BossTimers(commands.Cog):
                     if not expired_timer:
                         continue
 
+                    removed_any = True
                     if expired_timer.get('static_id'):
                         static_event = self.static_events.get(expired_timer['static_id'])
                         if static_event:
@@ -237,6 +572,9 @@ class BossTimers(commands.Cog):
                     self._cleanup_timer_image(expired_timer)
                 except Exception as e:
                     print(f"Error cleaning up expired timer: {e}")
+
+        if removed_any:
+            self._save_timers()
 
     def _get_next_timer(self):
         if not self.boss_timers:
@@ -357,6 +695,185 @@ class BossTimers(commands.Cog):
         except Exception as e:
             print(f"Failed to save static events: {e}")
 
+    def _load_timers(self):
+        """Restores non-static timers so a restart does not lose OCR/manual entries."""
+        timers_file = getattr(self, 'timers_file', None)
+        if timers_file is None:
+            return
+
+        try:
+            if not timers_file.exists():
+                return
+            with timers_file.open('r', encoding='utf-8') as f:
+                saved = json.load(f)
+        except Exception as e:
+            print(f"Failed to load timers: {e}")
+            return
+
+        now = time.time()
+        entries = saved if isinstance(saved, list) else []
+        restored = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                timestamp = int(entry['timestamp'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            # Static occurrences are rebuilt from static_events.json instead.
+            if entry.get('static_id') or timestamp <= now:
+                continue
+
+            data = {key: value for key, value in entry.items() if key != 'timestamp'}
+            data['image'] = self._normalize_image_path(data.get('image'))
+            data.setdefault('sent_alert', False)
+            data.setdefault('alert_seconds', 600)
+            while timestamp in self.boss_timers:
+                timestamp += 1
+            self.boss_timers[timestamp] = data
+            restored += 1
+
+        if restored:
+            print(f"Restored {restored} boss timer(s) from {timers_file}.")
+
+        dropped = len(entries) - restored
+        if dropped > 0:
+            # Compact on startup so expired rows do not linger until the next write.
+            print(f"Dropped {dropped} expired or invalid timer entry/entries from {timers_file}.")
+            self._save_timers()
+
+    def _save_timers(self):
+        timers_file = getattr(self, 'timers_file', None)
+        if timers_file is None:
+            return
+
+        try:
+            timers_file.parent.mkdir(parents=True, exist_ok=True)
+            payload = []
+            for timestamp, data in sorted(self.boss_timers.items()):
+                if data.get('static_id'):
+                    continue
+                entry = dict(data)
+                entry['image'] = self._normalize_image_path(entry.get('image'))
+                entry['timestamp'] = int(timestamp)
+                payload.append(entry)
+            with timers_file.open('w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            print(f"Failed to save timers: {e}")
+
+    async def _register_ocr_timer(
+        self,
+        boss_name: str,
+        future_timestamp: int,
+        cropped_image: Image.Image | None = None,
+        alert_seconds: int = 600,
+    ) -> tuple[str | None, bool]:
+        """Persists the timer image if needed and registers the timer."""
+        library_image_path = self._find_library_boss_image(boss_name)
+        using_library_image = library_image_path is not None
+
+        if using_library_image:
+            selected_image_path = self._normalize_image_path(library_image_path)
+        elif cropped_image is not None:
+            sanitized_boss_name = self._sanitize_filename(boss_name)
+            data_dir = self._ensure_data_dir()
+            unique_filename = data_dir / f"cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
+            cropped_image.save(unique_filename)
+            selected_image_path = self._normalize_image_path(str(unique_filename))
+        else:
+            selected_image_path = None
+
+        async with self.UPDATE_MESSAGE_LOCKED:
+            existing_timer = self.boss_timers.get(future_timestamp)
+            self._cleanup_timer_image(existing_timer)
+            self.boss_timers[future_timestamp] = {
+                'name': boss_name,
+                'image': selected_image_path,
+                'sent_alert': False,
+                'alert_seconds': alert_seconds,
+                'extra_informations': '',
+                'is_custom_image': using_library_image,
+            }
+            self.last_update_event_key = None
+            self._save_timers()
+
+        return selected_image_path, using_library_image
+
+    def _resolve_new_timestamp(self, text: str, now: float | None = None, zone=None) -> int:
+        """Resolves 'HH:MM', 'YYYY-MM-DD HH:MM' or a duration like '1h30m' to a timestamp."""
+        now_ts = now if now is not None else time.time()
+        cleaned = str(text).strip()
+
+        date_and_time = re.fullmatch(r'(\S+)\s+(\d{1,2}:\d{2})', cleaned)
+        if date_and_time:
+            year, month, day = self._parse_date(date_and_time.group(1), zone=zone)
+            hour, minute = self._parse_time(date_and_time.group(2))
+            timestamp = self._naive_to_timestamp(datetime(year, month, day, hour, minute), zone)
+            if timestamp <= now_ts:
+                raise ValueError(f"'{cleaned}' is already in the past.")
+            return timestamp
+
+        if re.fullmatch(r'\d{1,2}:\d{2}', cleaned):
+            hour, minute = self._parse_time(cleaned)
+            base = self._wall_clock_at(now_ts, zone)
+            candidate = datetime(base.year, base.month, base.day, hour, minute)
+            if self._naive_to_timestamp(candidate, zone) <= now_ts:
+                candidate += timedelta(days=1)
+            return self._naive_to_timestamp(candidate, zone)
+
+        return int(now_ts + self._parse_duration_seconds(cleaned))
+
+    def _apply_timer_edit(
+        self,
+        boss_name: str,
+        new_timestamp: int | None = None,
+        alert_seconds: int | None = None,
+        alert_mention: str | None = None,
+        extra_informations: str | None = None,
+        now: float | None = None,
+    ) -> tuple[int, dict, list[str]]:
+        """Edits the soonest timer matching boss_name. Raises LookupError when absent."""
+        target_name = boss_name.strip().lower()
+        matching = sorted(
+            timestamp for timestamp, data in self.boss_timers.items()
+            if data.get('name', '').strip().lower() == target_name
+        )
+        if not matching:
+            raise LookupError(f"No scheduled timer found for '{boss_name}'.")
+
+        current_timestamp = matching[0]
+        data = self.boss_timers[current_timestamp]
+        changes = []
+
+        if alert_seconds is not None:
+            data['alert_seconds'] = alert_seconds
+            changes.append(f"alert lead time to {alert_seconds}s")
+
+        if alert_mention is not None:
+            data['alert_mention'] = self._normalize_alert_mention(alert_mention)
+            changes.append(f"mention to {data['alert_mention']}")
+
+        if extra_informations is not None:
+            data['extra_informations'] = extra_informations
+            changes.append("extra informations")
+
+        if new_timestamp is not None and new_timestamp != current_timestamp:
+            del self.boss_timers[current_timestamp]
+            while new_timestamp in self.boss_timers:
+                new_timestamp += 1
+            self.boss_timers[new_timestamp] = data
+            current_timestamp = new_timestamp
+            changes.append("spawn time")
+
+        # Re-arm the alert whenever the timer moved back outside its alert window.
+        if not self._should_alert_now(current_timestamp, data, now=now):
+            data['sent_alert'] = False
+
+        self.last_update_event_key = None
+        self._save_timers()
+        return current_timestamp, data, changes
+
     def _parse_schedule_days(self, schedule_text: str):
         normalized = schedule_text.strip().lower().replace('and', ',')
         if normalized in ('daily', 'everyday'):
@@ -398,22 +915,22 @@ class BossTimers(commands.Cog):
         return int(match.group(1)), int(match.group(2))
 
     @staticmethod
-    def _parse_date(date_text: str):
+    def _parse_date(date_text: str, zone=None):
         """Parse a date string into (year, month, day).
 
         Accepted formats: YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY, or
-        keywords: today, tomorrow.
+        keywords: today, tomorrow. Relative keywords resolve in `zone`.
         Raises ValueError on unrecognised format or invalid calendar date.
         """
         text = date_text.strip()
         lowered = text.lower()
 
         if lowered == 'today':
-            now = datetime.now()
+            now = BossTimers._wall_clock_now(zone)
             return now.year, now.month, now.day
 
         if lowered == 'tomorrow':
-            tomorrow = datetime.now() + timedelta(days=1)
+            tomorrow = BossTimers._wall_clock_now(zone) + timedelta(days=1)
             return tomorrow.year, tomorrow.month, tomorrow.day
 
         # YYYY-MM-DD
@@ -437,20 +954,20 @@ class BossTimers(commands.Cog):
 
     def _get_next_occurrence(self, event: dict, after: float | None = None):
         after_ts = after if after is not None else time.time()
+        zone = self._event_zone(event)
 
         # One-time events have a fixed absolute date rather than a recurring schedule.
         if event.get('is_one_time'):
-            year, month, day = self._parse_date(event['date'])
+            year, month, day = self._parse_date(event['date'], zone=zone)
             hour, minute = self._parse_time(event['time'])
-            event_dt = datetime(year, month, day, hour, minute)
-            event_ts = int(event_dt.timestamp())
+            event_ts = self._naive_to_timestamp(datetime(year, month, day, hour, minute), zone)
             if event_ts <= after_ts:
                 raise ValueError(
                     f"One-time event '{event.get('name')}' is scheduled in the past ({event['date']} {event['time']})."
                 )
             return event_ts
 
-        after_dt = datetime.fromtimestamp(after_ts)
+        after_dt = self._wall_clock_at(after_ts, zone)
         hour, minute = self._parse_time(event['time'])
         weekdays = self._parse_schedule_days(event['schedule'])
 
@@ -465,7 +982,7 @@ class BossTimers(commands.Cog):
                 hour,
                 minute,
             )
-            candidate_ts = candidate_dt.timestamp()
+            candidate_ts = self._naive_to_timestamp(candidate_dt, zone)
             if candidate_ts > after_ts:
                 return int(candidate_ts)
 
@@ -476,7 +993,7 @@ class BossTimers(commands.Cog):
             next_timestamp = self._get_next_occurrence(event, after=after)
         except ValueError as e:
             print(f"Static event scheduling failed for {event.get('name')}: {e}")
-            return
+            return None
 
         while next_timestamp in self.boss_timers:
             next_timestamp += 1
@@ -490,17 +1007,11 @@ class BossTimers(commands.Cog):
             'alert_seconds': event.get('alert_seconds', 300),
             'alert_mention': self._normalize_alert_mention(event.get('alert_mention', '@here')),
         }
+        return next_timestamp
 
     def _schedule_all_static_events(self):
         for event in self.static_events.values():
             self._schedule_static_event(event)
-
-    async def _download_image_bytes(self, image_url: str) -> bytes:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(image_url) as response:
-                if response.status != 200:
-                    raise ValueError(f"Image download failed with status {response.status}")
-                return await response.read()
 
     async def _read_attachment_with_retries(
         self,
@@ -671,6 +1182,8 @@ class BossTimers(commands.Cog):
                                 )
 
                         alert_boss_data['sent_alert'] = True
+                        # Persist immediately so a restart before the spawn does not re-alert.
+                        self._save_timers()
                         alert_message_content = self._build_alert_message_content(alert_boss_data['name'], alert_boss_data)
                         await update_channel.send(alert_message_content, delete_after=180)
                     except Exception as exc:
@@ -682,8 +1195,6 @@ class BossTimers(commands.Cog):
                 message_to_edit = await self._get_or_create_update_message(update_channel)
             except Exception as e:
                 print(f"Error updating message: {e}")
-
-        self.manage_boss_timers_task.change_interval(seconds=15)
 
     # Create a command group for boss management
     boss_group = app_commands.Group(name="boss", description="Manage boss timers.")
@@ -699,7 +1210,9 @@ class BossTimers(commands.Cog):
         alert_time="Optional alert timing like 5m, 15m, 1s, or 90.",
         alert_mention="Optional text mention like @role, @everyone, or LW. Defaults to @here.",
         extra_informations="Optional text to show beneath the event message.",
+        timezone="Timezone the time is given in, e.g. America/New_York. Defaults to the server timezone.",
     )
+    @app_commands.autocomplete(timezone=_timezone_autocomplete)
     async def add_static_boss_command(
         self,
         interaction: discord.Interaction,
@@ -710,6 +1223,7 @@ class BossTimers(commands.Cog):
         alert_time: str | None = None,
         alert_mention: str | None = None,
         extra_informations: str | None = None,
+        timezone: str | None = None,
     ):
         """Slash command to add a persistent static event."""
         if not self._has_management_permission(interaction):
@@ -732,6 +1246,7 @@ class BossTimers(commands.Cog):
             hours, minutes = self._parse_time(time)
             self._parse_schedule_days(schedule)
             alert_seconds = self._parse_alert_time(alert_time)
+            event_zone = resolve_zone(timezone) or DEFAULT_ZONE
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             return
@@ -787,17 +1302,22 @@ class BossTimers(commands.Cog):
             'alert_seconds': alert_seconds,
             'alert_mention': self._normalize_alert_mention(alert_mention),
             'extra_informations': extra_informations or '',
+            'timezone': str(event_zone) if event_zone is not None else '',
         }
 
         self.static_events[event_id] = event
         self._save_static_events()
-        self._schedule_static_event(event)
+        next_timestamp = self._schedule_static_event(event)
 
         alert_target = event['alert_mention']
-        await interaction.followup.send(
-            f"✅ Static event '{name}' added for {schedule} at {hours:02d}:{minutes:02d} with alert timing {alert_seconds}s and mention {alert_target}.",
-            ephemeral=True,
+        response = (
+            f"✅ Static event '{name}' added for {schedule} at {hours:02d}:{minutes:02d} "
+            f"({self._zone_label(event_zone)}) with alert timing {alert_seconds}s and mention {alert_target}."
         )
+        if next_timestamp:
+            response += f"\nNext occurrence: <t:{next_timestamp}:F> which is <t:{next_timestamp}:R>."
+
+        await interaction.followup.send(response, ephemeral=True)
 
     @add_group.command(name="onetime", description="Add a one-time event that fires once and then removes itself.")
     @app_commands.describe(
@@ -808,7 +1328,9 @@ class BossTimers(commands.Cog):
         alert_time="Optional alert timing like 5m, 15m, 1s, or 90.",
         alert_mention="Optional text mention like @role, @everyone, or LW. Defaults to @here.",
         extra_informations="Optional text to show beneath the event message.",
+        timezone="Timezone the date/time is given in, e.g. America/New_York. Defaults to the server timezone.",
     )
+    @app_commands.autocomplete(timezone=_timezone_autocomplete)
     async def add_onetime_boss_command(
         self,
         interaction: discord.Interaction,
@@ -819,6 +1341,7 @@ class BossTimers(commands.Cog):
         alert_time: str | None = None,
         alert_mention: str | None = None,
         extra_informations: str | None = None,
+        timezone: str | None = None,
     ):
         """Slash command to add a one-time event that fires once and then auto-removes itself."""
         if not self._has_management_permission(interaction):
@@ -838,19 +1361,20 @@ class BossTimers(commands.Cog):
         await interaction.response.defer(thinking=True, ephemeral=True)
 
         try:
-            year, month, day = self._parse_date(date)
+            event_zone = resolve_zone(timezone) or DEFAULT_ZONE
+            year, month, day = self._parse_date(date, zone=event_zone)
             hours, minutes = self._parse_time(time)
             alert_seconds = self._parse_alert_time(alert_time)
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             return
 
-        # Reject dates that are already in the past.
-        from datetime import datetime as _dt
-        event_dt = _dt(year, month, day, hours, minutes)
-        if event_dt.timestamp() <= _dt.now().timestamp():
+        event_timestamp = self._naive_to_timestamp(datetime(year, month, day, hours, minutes), event_zone)
+        # `time` is shadowed by the command parameter here, so derive "now" from datetime.
+        if event_timestamp <= datetime.now(event_zone).timestamp():
             await interaction.followup.send(
-                f"❌ The date/time {date} {hours:02d}:{minutes:02d} is already in the past.",
+                f"❌ The date/time {year:04d}-{month:02d}-{day:02d} {hours:02d}:{minutes:02d} "
+                f"({self._zone_label(event_zone)}) is already in the past.",
                 ephemeral=True,
             )
             return
@@ -918,6 +1442,7 @@ class BossTimers(commands.Cog):
             'alert_seconds': alert_seconds,
             'alert_mention': self._normalize_alert_mention(alert_mention),
             'extra_informations': extra_informations or '',
+            'timezone': str(event_zone) if event_zone is not None else '',
         }
 
         self.static_events[event_id] = event
@@ -926,7 +1451,9 @@ class BossTimers(commands.Cog):
 
         alert_target = event['alert_mention']
         await interaction.followup.send(
-            f"✅ One-time event '{name}' added for {year:04d}-{month:02d}-{day:02d} at {hours:02d}:{minutes:02d} with alert timing {alert_seconds}s and mention {alert_target}.",
+            f"✅ One-time event '{name}' added for {year:04d}-{month:02d}-{day:02d} at {hours:02d}:{minutes:02d} "
+            f"({self._zone_label(event_zone)}) with alert timing {alert_seconds}s and mention {alert_target}."
+            f"\nStarts <t:{event_timestamp}:F> which is <t:{event_timestamp}:R>.",
             ephemeral=True,
         )
 
@@ -956,66 +1483,37 @@ class BossTimers(commands.Cog):
 
         await interaction.response.defer(thinking=True, ephemeral=True)
 
-        image_to_process = None
-        if image is not None:
-            try:
-                image_bytes = await self._read_attachment_with_retries(image)
-                image_to_process = Image.open(io.BytesIO(image_bytes))
-            except Exception as exc:
-                await interaction.followup.send(f"Unable to read the uploaded image: {exc}", ephemeral=True)
-                return
-        else:
-            try:
-                clipboard_image = ImageGrab.grabclipboard()
-                if not clipboard_image:
-                    await interaction.followup.send("No image was found in the clipboard.", ephemeral=True)
-                    return
-                image_to_process = clipboard_image
-            except Exception as exc:
-                await interaction.followup.send(f"Unable to read the clipboard image: {exc}", ephemeral=True)
-                return
+        try:
+            image_bytes = await self._read_attachment_with_retries(image)
+            image_to_process = Image.open(io.BytesIO(image_bytes))
+        except Exception as exc:
+            await interaction.followup.send(f"Unable to read the uploaded image: {exc}", ephemeral=True)
+            return
 
         try:
             result_message, future_timestamp, parsed_boss_name = parse_boss_info(image_to_process)
-            if future_timestamp is None:
+            if future_timestamp is None or not parsed_boss_name:
                 await interaction.followup.send(f"⚠️ {result_message}", ephemeral=True)
                 return
 
-            boss_name_to_use = parsed_boss_name
-            if not boss_name_to_use:
-                await interaction.followup.send("Could not determine a boss name from the OCR image.", ephemeral=True)
-                return
-
-            library_image_path = self._find_library_boss_image(boss_name_to_use)
-            using_library_image = library_image_path is not None
-
-            if using_library_image:
-                selected_image_path = library_image_path
-            else:
-                sanitized_boss_name = self._sanitize_filename(boss_name_to_use)
-                data_dir = self._ensure_data_dir()
-                unique_filename = data_dir / f"cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
-                cropped_image = self._crop_image_for_timer(image_to_process)
-                cropped_image.save(unique_filename)
-                selected_image_path = str(unique_filename)
-
-            async with self.UPDATE_MESSAGE_LOCKED:
-                existing_timer = self.boss_timers.get(future_timestamp)
-                self._cleanup_timer_image(existing_timer)
-                self.boss_timers[future_timestamp] = {
-                    'name': boss_name_to_use,
-                    'image': selected_image_path,
-                    'sent_alert': False,
-                    'alert_seconds': 600,
-                    'extra_informations': '',
-                    'is_custom_image': using_library_image,
-                }
-
-            response_message = result_message
-            if using_library_image:
-                response_message += "\nUsing image from data/boss_images/."
-
-            await interaction.followup.send(content=response_message, file=discord.File(selected_image_path))
+            cropped_image = self._crop_image_for_timer(image_to_process)
+            preview_content, preview_file = self._build_ocr_preview(
+                parsed_boss_name, future_timestamp, cropped_image
+            )
+            view = OcrConfirmView(
+                self,
+                parsed_boss_name,
+                future_timestamp,
+                cropped_image,
+                interaction.user.id,
+            )
+            view.message = await interaction.followup.send(
+                content=preview_content,
+                file=preview_file,
+                view=view,
+                ephemeral=True,
+                wait=True,
+            )
         except Exception as exc:
             await interaction.followup.send(f"An unexpected error occurred: {exc}", ephemeral=True)
 
@@ -1041,8 +1539,10 @@ class BossTimers(commands.Cog):
             await interaction.followup.send(boss_list_message, ephemeral=True)
 
     @boss_group.command(name="delete", description="Deletes all timer entries for a specified boss.")
+    @app_commands.describe(boss_name="Name of the boss/event to delete.")
+    @app_commands.autocomplete(boss_name=_boss_name_autocomplete)
     async def delete_boss_command(self, interaction: discord.Interaction, boss_name: str):
-        """Slash command to delete boss timers by name."""
+        """Slash command to delete boss timers by name, behind a confirmation."""
         if not self._has_management_permission(interaction):
             await interaction.response.send_message(
                 "❌ You do not have the required boss management role to use this command.",
@@ -1051,40 +1551,90 @@ class BossTimers(commands.Cog):
             return
 
         await interaction.response.defer(thinking=True, ephemeral=True)
-        
+
         async with self.UPDATE_MESSAGE_LOCKED:
-            if not self.boss_timers and not self.static_events:
-                await interaction.followup.send("There are no bosses to delete.", ephemeral=True)
+            timers, static_ids = self._collect_delete_targets(boss_name)
+
+        if not timers and not static_ids:
+            await interaction.followup.send(
+                f"❌ Could not find an event named '{boss_name}'.", ephemeral=True
+            )
+            return
+
+        view = ConfirmDeleteView(self, boss_name, interaction.user.id)
+        view.message = await interaction.followup.send(
+            content=self._build_delete_preview(boss_name, timers, static_ids),
+            view=view,
+            ephemeral=True,
+            wait=True,
+        )
+
+    @boss_group.command(name="edit", description="Edit the next scheduled timer for a boss.")
+    @app_commands.describe(
+        boss_name="Name of the boss/event to edit.",
+        new_time="New spawn time: duration (1h30m, 45m, 90), HH:MM, or 'YYYY-MM-DD HH:MM'.",
+        alert_time="New alert lead time like 5m, 15m, or 600.",
+        alert_mention="New mention like @role, @everyone, or LW.",
+        extra_informations="Replacement text shown beneath the event message.",
+        timezone="Timezone new_time is given in, e.g. America/New_York. Defaults to the server timezone.",
+    )
+    @app_commands.autocomplete(boss_name=_boss_name_autocomplete, timezone=_timezone_autocomplete)
+    async def edit_boss_command(
+        self,
+        interaction: discord.Interaction,
+        boss_name: str,
+        new_time: str | None = None,
+        alert_time: str | None = None,
+        alert_mention: str | None = None,
+        extra_informations: str | None = None,
+        timezone: str | None = None,
+    ):
+        """Slash command to adjust the soonest timer for a boss without re-adding it."""
+        if not self._has_management_permission(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have the required boss management role to use this command.",
+                ephemeral=True,
+            )
+            return
+
+        if new_time is None and alert_time is None and alert_mention is None and extra_informations is None:
+            await interaction.response.send_message(
+                "❌ Provide at least one field to change.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        try:
+            edit_zone = resolve_zone(timezone) or DEFAULT_ZONE
+            new_timestamp = self._resolve_new_timestamp(new_time, zone=edit_zone) if new_time is not None else None
+            alert_seconds = self._parse_alert_time(alert_time) if alert_time is not None else None
+        except ValueError as exc:
+            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            return
+
+        async with self.UPDATE_MESSAGE_LOCKED:
+            try:
+                timestamp, data, changes = self._apply_timer_edit(
+                    boss_name,
+                    new_timestamp=new_timestamp,
+                    alert_seconds=alert_seconds,
+                    alert_mention=alert_mention,
+                    extra_informations=extra_informations,
+                )
+            except LookupError as exc:
+                await interaction.followup.send(f"❌ {exc}", ephemeral=True)
                 return
 
-            static_ids_to_remove = []
-            for event_id, event in self.static_events.items():
-                if event['name'].strip().lower() == boss_name.strip().lower():
-                    static_ids_to_remove.append(event_id)
+            response = (
+                f"✅ Updated **{data['name']}** ({', '.join(changes)}).\n"
+                f"Now spawns <t:{timestamp}:F> which is <t:{timestamp}:R>."
+            )
+            if data.get('static_id'):
+                response += "\n⚠️ This is a static event occurrence; the next occurrence reverts to the saved schedule."
 
-            deleted_timers = 0
-            for key in list(self.boss_timers.keys()):
-                data = self.boss_timers[key]
-                if data['name'].strip().lower() == boss_name.strip().lower():
-                    removed_timer = self.boss_timers.pop(key, None)
-                    self._cleanup_timer_image(removed_timer)
-                    deleted_timers += 1
-
-            for event_id in static_ids_to_remove:
-                event = self.static_events.pop(event_id, None)
-                if event:
-                    if not event.get('is_reused_image'):
-                        self._delete_file_if_exists(event.get('image'))
-                    deleted_timers += 1
-
-            if static_ids_to_remove:
-                self._save_static_events()
-
-            if deleted_timers == 0:
-                await interaction.followup.send(f"❌ Could not find an event named '{boss_name}'.", ephemeral=True)
-                return
-
-            await interaction.followup.send(f"✅ Successfully deleted {deleted_timers} timer(s) for '{boss_name}'.", ephemeral=True)
+        await interaction.followup.send(response, ephemeral=True)
 
     # Skipping fixed-schedule bosses has been removed; command removed.
 
@@ -1102,39 +1652,26 @@ class BossTimers(commands.Cog):
                 img = Image.open(io.BytesIO(image_bytes))
                 result_message, future_timestamp, boss_name = parse_boss_info(img)
 
-                if future_timestamp is not None:
-                    library_image_path = self._find_library_boss_image(boss_name)
-                    using_library_image = library_image_path is not None
-
-                    if using_library_image:
-                        selected_image_path = library_image_path
-                    else:
-                        sanitized_boss_name = self._sanitize_filename(boss_name)
-                        data_dir = self._ensure_data_dir()
-                        unique_filename = data_dir / f"cropped_screenshot_{sanitized_boss_name}_{future_timestamp}.png"
-                        cropped_image = self._crop_image_for_timer(img)
-                        cropped_image.save(unique_filename)
-                        selected_image_path = str(unique_filename)
-
-                    async with self.UPDATE_MESSAGE_LOCKED:
-                        existing_timer = self.boss_timers.get(future_timestamp)
-                        self._cleanup_timer_image(existing_timer)
-                        self.boss_timers[future_timestamp] = {
-                            'name': boss_name,
-                            'image': selected_image_path,
-                            'sent_alert': False,
-                            'alert_seconds': 600,
-                            'description': '',
-                            'is_custom_image': using_library_image,
-                        }
-
-                    response_message = result_message
-                    if using_library_image:
-                        response_message += "\nUsing image from data/boss_images/."
-
-                    await message.channel.send(content=response_message, file=discord.File(selected_image_path))
-                else:
+                if future_timestamp is None or not boss_name:
                     await message.channel.send(f"⚠️ {result_message}")
+                    return
+
+                cropped_image = self._crop_image_for_timer(img)
+                preview_content, preview_file = self._build_ocr_preview(
+                    boss_name, future_timestamp, cropped_image
+                )
+                view = OcrConfirmView(
+                    self,
+                    boss_name,
+                    future_timestamp,
+                    cropped_image,
+                    message.author.id,
+                )
+                view.message = await message.channel.send(
+                    content=preview_content,
+                    file=preview_file,
+                    view=view,
+                )
 
             except (aiohttp.ClientConnectorError, OSError) as e:
                 await message.channel.send("An unexpected network error occurred while fetching the image. Please try again.")
@@ -1143,28 +1680,43 @@ class BossTimers(commands.Cog):
 
     # Fixed-schedule helpers and timers fully removed; timers are created via OCR or manual commands only.
 
-    @staticmethod
-    async def cleanup_temp_images():
-        """Cleans up temporary PNG files from /data directory."""
+    def _referenced_image_paths(self) -> set:
+        """Absolute paths of images still needed by restored or scheduled timers."""
+        referenced = set()
+        for data in self.boss_timers.values():
+            image_path = data.get('image')
+            if not image_path:
+                continue
+            try:
+                referenced.add(Path(image_path).resolve())
+            except OSError:
+                continue
+        return referenced
+
+    async def cleanup_temp_images(self):
+        """Removes PNG files at the data root that no active timer references."""
         try:
-            # Ensure data directory exists
-            if not os.path.exists('data'):
-                os.makedirs('data')
+            data_dir = Path('data')
+            if not data_dir.exists():
+                data_dir.mkdir(parents=True, exist_ok=True)
                 return
 
+            referenced = self._referenced_image_paths()
+
             print("Cleaning up temporary image files...")
-            for filename in os.listdir('data'):
-                filepath = os.path.join('data', filename)
-                # Skip directories; only remove PNG files at data root
-                if os.path.isdir(filepath) or not filename.endswith('.png'):
+            for candidate in data_dir.iterdir():
+                # Only remove PNG files at the data root; subfolders are long-lived.
+                if candidate.is_dir() or candidate.suffix.lower() != '.png':
                     continue
-                    
+
                 try:
-                    os.remove(filepath)
-                    print(f"Removed temporary file: {filename}")
+                    if candidate.resolve() in referenced:
+                        continue
+                    candidate.unlink()
+                    print(f"Removed temporary file: {candidate.name}")
                 except Exception as e:
-                    print(f"Error removing file {filename}: {e}")
-                    
+                    print(f"Error removing file {candidate.name}: {e}")
+
             print("Temporary image cleanup complete.")
         except Exception as e:
             print(f"Error during image cleanup: {e}")
