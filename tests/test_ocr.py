@@ -138,6 +138,19 @@ def test_extract_boss_name_never_falls_back_to_the_timer_line(ocr):
     assert ocr._extract_boss_name(lines, 0, 1) is None
 
 
+def test_find_ruler_line_index_ignores_punctuation_noise(ocr):
+    lines = ocr._group_text_lines(build_ocr_data([["Domain", "Ruler\u2019", "'"], ["Svart"]]))
+    assert ocr._find_ruler_line_index(lines) == 0
+
+
+def test_extract_boss_name_skips_punctuation_only_trailing_words(ocr):
+    """'Domain Ruler' ' is one misread line; the name still comes from the line below."""
+    lines = ocr._group_text_lines(build_ocr_data([
+        ["Domain", "Ruler\u2019", "'"], ["Svart", "~~"], ["\u00a9", "15h", "9m", "left"],
+    ]))
+    assert ocr._extract_boss_name(lines, 0, 2) == "Svart"
+
+
 # --- end to end ---
 
 def test_parse_boss_info_uses_the_whitelist_pass(ocr, fake_ocr):
@@ -211,6 +224,49 @@ def test_parse_boss_info_rejects_non_image_input(ocr):
     message, timestamp, _ = ocr.parse_boss_info("not an image")
     assert timestamp is None
     assert "Invalid image source" in message
+
+
+def test_parse_boss_info_retries_with_another_binarization(ocr, monkeypatch):
+    """Bright card art can defeat the first threshold; a later one still reads the card."""
+    image = Image.new("RGB", (400, 200))
+    monkeypatch.setattr(ocr, "_candidate_images", lambda source: iter([image, image]))
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", lambda *a, **k: "17h44m")
+
+    attempts = [build_ocr_data([["unreadable", "noise"]]), build_ocr_data(CARD_LINES)]
+    monkeypatch.setattr(ocr.pytesseract, "image_to_data", lambda *a, **k: attempts.pop(0))
+
+    _, timestamp, boss_name = ocr.parse_boss_info(image)
+
+    assert boss_name == "Megir"
+    assert 63835 <= timestamp - int(time.time()) <= 63845
+
+
+def test_parse_boss_info_reports_the_first_failure_when_every_pass_fails(ocr, monkeypatch):
+    image = Image.new("RGB", (400, 200))
+    monkeypatch.setattr(ocr, "_candidate_images", lambda source: iter([image, image]))
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", lambda *a, **k: "")
+
+    attempts = [build_ocr_data([["first", "attempt"]]), build_ocr_data([["second", "attempt"]])]
+    monkeypatch.setattr(ocr.pytesseract, "image_to_data", lambda *a, **k: attempts.pop(0))
+
+    message, timestamp, _ = ocr.parse_boss_info(image)
+
+    assert timestamp is None
+    assert "first attempt" in message
+
+
+# --- binarization ---
+
+def test_preprocess_image_binarizes_bright_text_on_a_bright_background(ocr):
+    """Local thresholding keeps the card text readable when the art behind it is light."""
+    import numpy as np
+
+    canvas = np.full((60, 120, 3), 190, dtype=np.uint8)
+    canvas[20:40, 58:61] = 250  # a thin bright stroke on an almost equally bright background
+    binarized = np.array(ocr.preprocess_image(Image.fromarray(canvas)))
+
+    assert binarized[120, 236] == 0  # stroke reads as dark text
+    assert binarized[10, 10] == 255  # background reads as white paper
 
 
 # --- raw text diagnostics ---
