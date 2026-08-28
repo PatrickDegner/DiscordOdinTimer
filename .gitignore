@@ -65,6 +65,10 @@ data/cropped_screenshot_*.png
 # Local OCR test screenshots and the crops produced by tools/ocr_check.py
 tests/images/
 
+# jsons
+data/static_events.json
+data/timers.json
+
 # Python virtualenv and packaging
 pip-wheel-metadata/
 __pypackages__/

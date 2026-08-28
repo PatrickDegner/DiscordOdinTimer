@@ -29,6 +29,13 @@ LAYOUT_CONFIG = r'--oem 1 --psm 6 -l eng'
 # (ih/Ih/th for 1h, S for 5, O for 0) impossible instead of patching them afterwards.
 TIMER_CONFIG = r'--oem 1 --psm 7 -l eng -c tessedit_char_whitelist=0123456789hms'
 
+# Card text is bright over arbitrary game art, so a single global threshold only
+# works when the art behind the text is dark. Sauvola compares every pixel with
+# its own neighbourhood, which also handles bright backgrounds.
+SAUVOLA_WINDOW = 31
+SAUVOLA_K = 0.25
+SAUVOLA_RANGE = 128.0
+
 _UNIT_SECONDS = {'h': 3600, 'm': 60, 's': 1}
 
 # Applied only to the numeric part of a timer token, never to the boss name.
@@ -52,25 +59,55 @@ def ocr_debug_snippet(text: str | None, limit: int = _DEBUG_TEXT_LIMIT) -> str:
     return f"\nRaw OCR text:\n```\n{cleaned}\n```"
 
 
+def _upscale(image: Image.Image, factor: int = 4) -> np.ndarray:
+    """Returns the image as an RGB array, enlarged so small card text stays legible."""
+    upscaled = image.resize((image.width * factor, image.height * factor), Image.LANCZOS)
+    return np.array(upscaled.convert('RGB'))
+
+
+def _value_channel(rgb: np.ndarray) -> np.ndarray:
+    """Brightness per channel maximum, so the red 'Domain Ruler' label stays as bright as white text."""
+    return rgb.max(axis=2)
+
+
+def _gray_channel(rgb: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+
+def _otsu_binarize(channel: np.ndarray) -> np.ndarray:
+    _, binary = cv2.threshold(channel, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    return binary
+
+
+def _sauvola_binarize(channel: np.ndarray, window: int = SAUVOLA_WINDOW, k: float = SAUVOLA_K) -> np.ndarray:
+    """Thresholds every pixel against its own neighbourhood; returns dark text on white."""
+    # Inverted so the bright card text becomes the dark foreground Sauvola expects.
+    inverted = (255 - channel).astype(np.float32)
+    mean = cv2.boxFilter(inverted, cv2.CV_32F, (window, window), normalize=True)
+    mean_of_squares = cv2.boxFilter(inverted * inverted, cv2.CV_32F, (window, window), normalize=True)
+    std = np.sqrt(np.maximum(mean_of_squares - mean * mean, 0.0))
+    threshold = mean * (1.0 + k * (std / SAUVOLA_RANGE - 1.0))
+    return np.where(inverted < threshold, 0, 255).astype(np.uint8)
+
+
 def preprocess_image(image: Image.Image) -> Image.Image:
-    """
-    Applies image processing steps to improve OCR accuracy.
-    Upscales, converts to grayscale, and applies Otsu's binarization.
-    """
-    img_upscaled = image.resize((image.width * 4, image.height * 4), Image.LANCZOS)
+    """Upscales and binarizes a card so Tesseract sees black text on white."""
+    return Image.fromarray(_sauvola_binarize(_value_channel(_upscale(image))))
 
-    img_np = np.array(img_upscaled)
 
-    if len(img_np.shape) == 3 and img_np.shape[2] == 4:  # RGBA
-        img_gray = cv2.cvtColor(img_np, cv2.COLOR_RGBA2GRAY)
-    elif len(img_np.shape) == 3 and img_np.shape[2] == 3:  # RGB
-        img_gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    else:
-        img_gray = img_np
+# Tried in order when the primary binarization does not produce a readable card.
+_FALLBACK_BINARIZERS = (
+    lambda rgb: _sauvola_binarize(_value_channel(rgb), window=61),
+    lambda rgb: _otsu_binarize(_gray_channel(rgb)),
+)
 
-    _, img_bw = cv2.threshold(img_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    img_pil_bw = Image.fromarray(img_bw)
-    return img_pil_bw
+
+def _candidate_images(image: Image.Image):
+    """Yields binarized versions of the card, cheapest and most reliable first."""
+    yield preprocess_image(image)
+    rgb = _upscale(image)
+    for binarize in _FALLBACK_BINARIZERS:
+        yield Image.fromarray(binarize(rgb))
 
 
 def validate_remaining_seconds(total_seconds: int) -> str | None:
@@ -155,9 +192,14 @@ def _group_text_lines(data: dict) -> list[dict]:
     return lines
 
 
+def _letters_only(word: str) -> str:
+    """Lowercased letters of a word, so OCR punctuation noise like "Ruler'" still matches."""
+    return re.sub(r'[^a-z]', '', word.lower())
+
+
 def _find_ruler_line_index(lines: list[dict]) -> int | None:
     for index, line in enumerate(lines):
-        lowered = [word.lower().strip('.,:;') for word in line['words']]
+        lowered = [_letters_only(word) for word in line['words']]
         if 'domain' in lowered and 'ruler' in lowered:
             return index
     return None
@@ -171,21 +213,25 @@ def _find_timer_line_index(lines: list[dict], after: int) -> int | None:
     return None
 
 
-def _extract_boss_name(lines: list[dict], ruler_index: int, timer_index: int) -> str | None:
-    ruler_line = lines[ruler_index]
-    lowered = [word.lower().strip('.,:;') for word in ruler_line['words']]
-    trailing = ruler_line['words'][lowered.index('ruler') + 1:]
-
-    if trailing:
-        candidate = ' '.join(trailing)
-    elif ruler_index + 1 < len(lines) and ruler_index + 1 != timer_index:
-        candidate = lines[ruler_index + 1]['text']
-    else:
-        return None
-
+def _clean_boss_name(candidate: str) -> str | None:
     cleaned = re.sub(r'[^A-Za-z\s-]', '', candidate)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip(' -')
     return cleaned or None
+
+
+def _extract_boss_name(lines: list[dict], ruler_index: int, timer_index: int) -> str | None:
+    ruler_line = lines[ruler_index]
+    lowered = [_letters_only(word) for word in ruler_line['words']]
+    candidates = [' '.join(ruler_line['words'][lowered.index('ruler') + 1:])]
+
+    if ruler_index + 1 < len(lines) and ruler_index + 1 != timer_index:
+        candidates.append(lines[ruler_index + 1]['text'])
+
+    for candidate in candidates:
+        name = _clean_boss_name(candidate)
+        if name:
+            return name
+    return None
 
 
 def _read_timer_region(processed_img: Image.Image, line: dict, padding: int = 6) -> str:
@@ -208,76 +254,22 @@ def _read_timer_region(processed_img: Image.Image, line: dict, padding: int = 6)
 def parse_boss_info(image_source):
     """
     Reads a boss card in two passes: a layout pass for the name and a
-    digits-only pass for the timer row.
+    digits-only pass for the timer row. Retries with other binarizations when
+    the card art defeats the primary one.
     Returns: (discord_message, future_timestamp, boss_name)
     """
     try:
         if not isinstance(image_source, Image.Image):
             return "ERROR: Invalid image source provided. Expected a PIL Image object.", None, None
 
-        processed_img = preprocess_image(image_source)
-
-        data = pytesseract.image_to_data(
-            processed_img,
-            config=LAYOUT_CONFIG,
-            output_type=pytesseract.Output.DICT,
-        )
-        lines = _group_text_lines(data)
-        full_text = '\n'.join(line['text'] for line in lines)
-
-        if not full_text.strip():
-            return "ERROR: No text was extracted from the image by Tesseract OCR.", None, None
-
-        ruler_index = _find_ruler_line_index(lines)
-        if ruler_index is None:
-            return (
-                "Could not find a 'Domain Ruler' label in the extracted text."
-                f"{ocr_debug_snippet(full_text)}"
-            ), None, None
-
-        timer_index = _find_timer_line_index(lines, after=ruler_index)
-        if timer_index is None:
-            return (
-                "Could not find a remaining time (hours/minutes/seconds) below the "
-                "'Domain Ruler' label."
-                f"{ocr_debug_snippet(full_text)}"
-            ), None, None
-
-        boss_name = _extract_boss_name(lines, ruler_index, timer_index)
-        if not boss_name:
-            return (
-                "ERROR: A timer was found but no boss name could be read."
-                f"{ocr_debug_snippet(full_text)}"
-            ), None, None
-
-        timer_line = lines[timer_index]
-        timer_text = _read_timer_region(processed_img, timer_line)
-        total_seconds_remaining = parse_remaining_seconds(timer_text)
-
-        if total_seconds_remaining is None:
-            # Fall back to the layout pass when the digits-only pass reads nothing.
-            timer_text = timer_line['text']
-            total_seconds_remaining = parse_remaining_seconds(timer_text)
-
-        if total_seconds_remaining is None:
-            return (
-                f"Could not read the remaining time from the timer row '{timer_line['text']}'."
-                f"{ocr_debug_snippet(full_text)}"
-            ), None, None
-
-        validation_error = validate_remaining_seconds(total_seconds_remaining)
-        if validation_error:
-            return (
-                f"ERROR: {validation_error}\nDetected boss: '{boss_name}', "
-                f"timer text: '{timer_text.strip()}'."
-                f"{ocr_debug_snippet(full_text)}"
-            ), None, None
-
-        future_timestamp = int(time.time() + total_seconds_remaining)
-        discord_message = (
-            f"**{boss_name}** \n<t:{future_timestamp}:F> thats <t:{future_timestamp}:R>"
-        )
-        return discord_message, future_timestamp, boss_name
+        first_result = None
+        for processed_img in _candidate_images(image_source):
+            result = _parse_processed_card(processed_img)
+            if result[1] is not None:
+                return result
+            if first_result is None:
+                first_result = result
+        return first_result
 
     except pytesseract.TesseractNotFoundError:
         return (
@@ -285,6 +277,71 @@ def parse_boss_info(image_source):
         ), None, None
     except Exception as e:
         return f"An unexpected error occurred: {e}", None, None
+
+
+def _parse_processed_card(processed_img):
+    """Runs both Tesseract passes over one binarized image."""
+    data = pytesseract.image_to_data(
+        processed_img,
+        config=LAYOUT_CONFIG,
+        output_type=pytesseract.Output.DICT,
+    )
+    lines = _group_text_lines(data)
+    full_text = '\n'.join(line['text'] for line in lines)
+
+    if not full_text.strip():
+        return "ERROR: No text was extracted from the image by Tesseract OCR.", None, None
+
+    ruler_index = _find_ruler_line_index(lines)
+    if ruler_index is None:
+        return (
+            "Could not find a 'Domain Ruler' label in the extracted text."
+            f"{ocr_debug_snippet(full_text)}"
+        ), None, None
+
+    timer_index = _find_timer_line_index(lines, after=ruler_index)
+    if timer_index is None:
+        return (
+            "Could not find a remaining time (hours/minutes/seconds) below the "
+            "'Domain Ruler' label."
+            f"{ocr_debug_snippet(full_text)}"
+        ), None, None
+
+    boss_name = _extract_boss_name(lines, ruler_index, timer_index)
+    if not boss_name:
+        return (
+            "ERROR: A timer was found but no boss name could be read."
+            f"{ocr_debug_snippet(full_text)}"
+        ), None, None
+
+    timer_line = lines[timer_index]
+    timer_text = _read_timer_region(processed_img, timer_line)
+    total_seconds_remaining = parse_remaining_seconds(timer_text)
+
+    if total_seconds_remaining is None:
+        # Fall back to the layout pass when the digits-only pass reads nothing.
+        timer_text = timer_line['text']
+        total_seconds_remaining = parse_remaining_seconds(timer_text)
+
+    if total_seconds_remaining is None:
+        return (
+            f"Could not read the remaining time from the timer row '{timer_line['text']}'."
+            f"{ocr_debug_snippet(full_text)}"
+        ), None, None
+
+    validation_error = validate_remaining_seconds(total_seconds_remaining)
+    if validation_error:
+        return (
+            f"ERROR: {validation_error}\nDetected boss: '{boss_name}', "
+            f"timer text: '{timer_text.strip()}'."
+            f"{ocr_debug_snippet(full_text)}"
+        ), None, None
+
+    future_timestamp = int(time.time() + total_seconds_remaining)
+    discord_message = (
+        f"**{boss_name}** \n<t:{future_timestamp}:F> thats <t:{future_timestamp}:R>"
+    )
+    return discord_message, future_timestamp, boss_name
 
 
 if __name__ == "__main__":
