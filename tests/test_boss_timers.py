@@ -282,15 +282,21 @@ def test_safe_edit_update_message_preserves_existing_attachments_without_reuploa
 
 
 def test_has_management_permission_returns_true_for_allowed_role(monkeypatch):
-    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_ID", 1522906832492822688)
+    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_IDS", frozenset({1522906832492822688}))
     interaction = SimpleNamespace(
         user=SimpleNamespace(roles=[SimpleNamespace(id=111), SimpleNamespace(id=1522906832492822688)])
     )
     assert module.BossTimers._has_management_permission(interaction) is True
 
 
+def test_has_management_permission_accepts_any_configured_role(monkeypatch):
+    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_IDS", frozenset({111, 222}))
+    interaction = SimpleNamespace(user=SimpleNamespace(roles=[SimpleNamespace(id=222)]))
+    assert module.BossTimers._has_management_permission(interaction) is True
+
+
 def test_has_management_permission_returns_false_without_allowed_role(monkeypatch):
-    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_ID", 1522906832492822688)
+    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_IDS", frozenset({1522906832492822688}))
     interaction = SimpleNamespace(
         user=SimpleNamespace(roles=[SimpleNamespace(id=111), SimpleNamespace(id=222)])
     )
@@ -298,11 +304,18 @@ def test_has_management_permission_returns_false_without_allowed_role(monkeypatc
 
 
 def test_has_management_permission_returns_false_when_role_id_not_configured(monkeypatch):
-    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_ID", 0)
+    monkeypatch.setattr(module, "ALLOWED_BOSS_MANAGER_ROLE_IDS", frozenset())
     interaction = SimpleNamespace(
         user=SimpleNamespace(roles=[SimpleNamespace(id=1522906832492822688)])
     )
     assert module.BossTimers._has_management_permission(interaction) is False
+
+
+def test_parse_role_ids_handles_multiple_separators_and_junk():
+    assert module.parse_role_ids("111, 222; 333 444") == frozenset({111, 222, 333, 444})
+    assert module.parse_role_ids("111,abc,0,222") == frozenset({111, 222})
+    assert module.parse_role_ids("") == frozenset()
+    assert module.parse_role_ids(None) == frozenset()
 
 
 # --- One-time event tests ---

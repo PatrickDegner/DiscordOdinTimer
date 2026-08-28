@@ -20,7 +20,29 @@ load_dotenv()
 
 # Get BOSS_COMMAND_CHANNEL_ID from environment
 BOSS_COMMAND_CHANNEL_ID = int(os.getenv('BOSS_COMMAND_CHANNEL_ID', 0))
-ALLOWED_BOSS_MANAGER_ROLE_ID = int(os.getenv('ALLOWED_BOSS_MANAGER_ROLE_ID', 0))
+
+
+def parse_role_ids(raw: str | None) -> frozenset[int]:
+    """Parses a comma/space/semicolon separated list of role IDs, ignoring blanks and 0."""
+    if not raw:
+        return frozenset()
+    ids = set()
+    for token in re.split(r'[,;\s]+', str(raw)):
+        if not token:
+            continue
+        try:
+            role_id = int(token)
+        except ValueError:
+            print(f"Ignoring invalid role ID in ALLOWED_BOSS_MANAGER_ROLE_ID: {token!r}")
+            continue
+        if role_id > 0:
+            ids.add(role_id)
+    return frozenset(ids)
+
+
+ALLOWED_BOSS_MANAGER_ROLE_IDS = parse_role_ids(
+    os.getenv('ALLOWED_BOSS_MANAGER_ROLE_IDS') or os.getenv('ALLOWED_BOSS_MANAGER_ROLE_ID')
+)
 
 ALL_TIMEZONE_NAMES = tuple(sorted(available_timezones()))
 
@@ -528,14 +550,14 @@ class BossTimers(commands.Cog):
 
     @staticmethod
     def _has_management_permission(interaction: discord.Interaction) -> bool:
-        if not ALLOWED_BOSS_MANAGER_ROLE_ID:
+        if not ALLOWED_BOSS_MANAGER_ROLE_IDS:
             return False
 
         roles = getattr(interaction.user, 'roles', None)
         if not roles:
             return False
 
-        return any(getattr(role, 'id', None) == ALLOWED_BOSS_MANAGER_ROLE_ID for role in roles)
+        return any(getattr(role, 'id', None) in ALLOWED_BOSS_MANAGER_ROLE_IDS for role in roles)
 
     @commands.Cog.listener()
     async def on_ready(self):

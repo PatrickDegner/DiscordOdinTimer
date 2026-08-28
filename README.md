@@ -55,7 +55,7 @@ Example:
 ```env
 BOT_TOKEN=your_bot_token_here
 BOSS_COMMAND_CHANNEL_ID=1521521777963044934
-ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688
+ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688,1522906832492822689
 TIMEZONE=Europe/Berlin
 TESSERACT_PATH=C:\Program Files\Tesseract-OCR\tesseract.exe
 ```
@@ -97,9 +97,12 @@ You can create timers in three ways:
 
 ### Command permissions
 - `/boss list` can be used by everyone.
-- `/boss add normal`, `/boss add static`, `/boss add onetime`, `/boss edit`, and `/boss delete` require the role whose ID is set in `.env` as `ALLOWED_BOSS_MANAGER_ROLE_ID`.
-- Example: `ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688`
-- If `ALLOWED_BOSS_MANAGER_ROLE_ID` is missing or set to `0`, add/edit/delete commands are blocked for everyone.
+- `/boss add normal`, `/boss add static`, `/boss add onetime`, `/boss edit`, and `/boss delete` require one of the roles whose IDs are set in `.env` as `ALLOWED_BOSS_MANAGER_ROLE_ID`.
+- Multiple roles are supported: separate the IDs with commas (spaces and semicolons also work). Having any one of them is enough.
+- Example single role: `ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688`
+- Example multiple roles: `ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688,1522906832492822689`
+- `ALLOWED_BOSS_MANAGER_ROLE_IDS` can be used instead as an alias; if both are set, `ALLOWED_BOSS_MANAGER_ROLE_IDS` wins.
+- If no valid role ID is configured, add/edit/delete commands are blocked for everyone.
 
 ### OCR flow
 
