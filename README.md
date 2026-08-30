@@ -91,13 +91,14 @@ You can create timers in three ways:
 - `/boss add onetime <name> <date> <time> [image] [alert_time] [alert_mention] [extra_informations]` - create a fixed one-time event
 - `/boss list` — show upcoming timers
 - `/boss edit <boss_name> [new_time] [alert_time] [alert_mention] [extra_informations] [timezone]` — change the next scheduled timer for a boss
+- `/boss skip <name>` — skip the next occurrence of a recurring static event
 - `/boss delete <boss_name>` — delete timers by name, after a confirmation prompt
 
-`boss_name` has autocomplete on both `/boss edit` and `/boss delete`, suggesting the names of currently scheduled timers and saved static events, so there is no need to type long names by hand.
+Boss/event names have autocomplete on `/boss edit`, `/boss skip`, and `/boss delete`, so there is no need to type long names by hand. `/boss skip` suggests recurring static events only.
 
 ### Command permissions
 - `/boss list` can be used by everyone.
-- `/boss add normal`, `/boss add static`, `/boss add onetime`, `/boss edit`, and `/boss delete` require one of the roles whose IDs are set in `.env` as `ALLOWED_BOSS_MANAGER_ROLE_ID`.
+- `/boss add normal`, `/boss add static`, `/boss add onetime`, `/boss edit`, `/boss skip`, and `/boss delete` require one of the roles whose IDs are set in `.env` as `ALLOWED_BOSS_MANAGER_ROLE_ID`.
 - Multiple roles are supported: separate the IDs with commas (spaces and semicolons also work). Having any one of them is enough.
 - Example single role: `ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688`
 - Example multiple roles: `ALLOWED_BOSS_MANAGER_ROLE_ID=1522906832492822688,1522906832492822689`
@@ -135,6 +136,10 @@ A parsed time of `0` or anything above 24 hours is rejected as a misread. When p
 - `timezone`: optional IANA timezone `new_time` is given in. Defaults to `TIMEZONE` from `.env`
 
 If the timer is moved back outside its alert window, the alert is re-armed and will fire again. Editing an occurrence of a static event only affects that occurrence; the next one follows the saved schedule again.
+
+### Skipping a static occurrence
+
+`/boss skip <name>` removes the soonest scheduled occurrence of a recurring static event and immediately schedules its following occurrence. The recurring event definition and image are kept, and the skip survives a bot restart. One-time and OCR timers cannot be skipped with this command.
 
 ### Deleting a timer
 

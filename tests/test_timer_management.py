@@ -229,6 +229,74 @@ def test_apply_timer_edit_invalidates_update_message_cache(cog):
     assert cog.last_update_event_key is None
 
 
+def test_skip_static_occurrence_replaces_only_the_soonest_recurring_timer(cog, monkeypatch):
+    event = {
+        "id": "static-a",
+        "name": "Megir",
+        "schedule": "daily",
+        "time": "20:00",
+        "image": "data/static_images/megir.png",
+    }
+    one_time = {"id": "once", "name": "Megir", "is_one_time": True}
+    cog.static_events = {"static-a": event, "once": one_time}
+    cog.boss_timers = {
+        1000: {"name": "Megir", "static_id": "static-a"},
+        1500: {"name": "Megir", "static_id": "once"},
+        2000: {"name": "Megir"},
+        3000: {"name": "Megir", "static_id": "static-a"},
+    }
+    monkeypatch.setattr(cog, "_schedule_static_event", lambda static_event, after=None: 4000)
+
+    skipped, following, selected_event = cog._skip_static_occurrence("  megir ")
+
+    assert (skipped, following, selected_event) == (1000, 4000, event)
+    assert 1000 not in cog.boss_timers
+    assert {1500, 2000, 3000}.issubset(cog.boss_timers)
+    assert event["skip_until"] == 1000
+    saved = json.loads(cog.static_events_file.read_text(encoding="utf-8"))
+    assert saved[0]["skip_until"] == 1000
+
+
+def test_schedule_static_event_honours_persisted_skip_after_restart(cog, monkeypatch):
+    event = {"id": "a", "name": "Megir", "image": "megir.png", "skip_until": 1000}
+    seen_after = []
+
+    def next_occurrence(static_event, after=None):
+        seen_after.append(after)
+        return 2000
+
+    monkeypatch.setattr(cog, "_get_next_occurrence", next_occurrence)
+
+    timestamp = cog._schedule_static_event(event)
+
+    assert timestamp == 2000
+    assert seen_after == [1000]
+    assert cog.boss_timers[2000]["static_id"] == "a"
+
+
+def test_skip_static_occurrence_rejects_normal_and_one_time_timers(cog):
+    cog.static_events = {"once": {"id": "once", "name": "Megir", "is_one_time": True}}
+    cog.boss_timers = {
+        1000: {"name": "Megir"},
+        2000: {"name": "Megir", "static_id": "once"},
+    }
+
+    with pytest.raises(LookupError, match="No recurring static timer"):
+        cog._skip_static_occurrence("Megir")
+
+    assert set(cog.boss_timers) == {1000, 2000}
+
+
+def test_known_recurring_static_names_excludes_one_time_events(cog):
+    cog.static_events = {
+        "b": {"name": "Weekly Raid"},
+        "a": {"name": "Daily Raid"},
+        "once": {"name": "Launch", "is_one_time": True},
+    }
+
+    assert cog._known_recurring_static_names() == ["Daily Raid", "Weekly Raid"]
+
+
 # --- persistence (improvement 7) ---
 
 def test_save_and_load_timers_roundtrip(cog):

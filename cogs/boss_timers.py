@@ -302,9 +302,21 @@ class BossTimers(commands.Cog):
         names.update(event['name'] for event in self.static_events.values() if event.get('name'))
         return sorted(names, key=str.lower)
 
+    def _known_recurring_static_names(self) -> list[str]:
+        names = {
+            event['name'] for event in self.static_events.values()
+            if event.get('name') and not event.get('is_one_time')
+        }
+        return sorted(names, key=str.lower)
+
     async def _boss_name_autocomplete(self, interaction: discord.Interaction, current: str):
         typed = current.strip().lower()
         matches = [name for name in self._known_event_names() if typed in name.lower()][:25]
+        return [app_commands.Choice(name=name, value=name) for name in matches]
+
+    async def _recurring_static_name_autocomplete(self, interaction: discord.Interaction, current: str):
+        typed = current.strip().lower()
+        matches = [name for name in self._known_recurring_static_names() if typed in name.lower()][:25]
         return [app_commands.Choice(name=name, value=name) for name in matches]
 
     def _collect_delete_targets(self, boss_name: str) -> tuple[list[tuple[int, dict]], list[str]]:
@@ -340,6 +352,39 @@ class BossTimers(commands.Cog):
 
         self.last_update_event_key = None
         return len(timers), len(static_ids)
+
+    def _skip_static_occurrence(self, boss_name: str) -> tuple[int, int, dict]:
+        """Skips the soonest recurring static occurrence matching boss_name."""
+        target = boss_name.strip().lower()
+        matches = []
+        for timestamp, timer in self.boss_timers.items():
+            static_event = self.static_events.get(timer.get('static_id'))
+            if (
+                timer.get('name', '').strip().lower() == target
+                and static_event
+                and not static_event.get('is_one_time')
+            ):
+                matches.append((timestamp, timer, static_event))
+
+        if not matches:
+            raise LookupError(f"No recurring static timer found for '{boss_name}'.")
+
+        skipped_timestamp, skipped_timer, static_event = min(matches, key=lambda item: item[0])
+        previous_skip_until = static_event.get('skip_until')
+        static_event['skip_until'] = skipped_timestamp
+        del self.boss_timers[skipped_timestamp]
+        next_timestamp = self._schedule_static_event(static_event, after=skipped_timestamp)
+        if next_timestamp is None:
+            self.boss_timers[skipped_timestamp] = skipped_timer
+            if previous_skip_until is None:
+                static_event.pop('skip_until', None)
+            else:
+                static_event['skip_until'] = previous_skip_until
+            raise RuntimeError(f"Could not schedule the next occurrence of '{boss_name}'.")
+
+        self._save_static_events()
+        self.last_update_event_key = None
+        return skipped_timestamp, next_timestamp, static_event
 
     @staticmethod
     def _build_delete_preview(boss_name: str, timers: list, static_ids: list) -> str:
@@ -1121,8 +1166,14 @@ class BossTimers(commands.Cog):
 
     def _schedule_static_event(self, event: dict, after: float | None = None):
         try:
-            next_timestamp = self._get_next_occurrence(event, after=after)
-        except ValueError as e:
+            effective_after = after
+            skip_until = event.get('skip_until')
+            if skip_until is not None:
+                skip_until = int(skip_until)
+                if effective_after is None or skip_until > effective_after:
+                    effective_after = skip_until
+            next_timestamp = self._get_next_occurrence(event, after=effective_after)
+        except (TypeError, ValueError) as e:
             print(f"Static event scheduling failed for {event.get('name')}: {e}")
             return None
 
@@ -1708,6 +1759,33 @@ class BossTimers(commands.Cog):
             wait=True,
         )
 
+    @boss_group.command(name="skip", description="Skip the next occurrence of a recurring static timer.")
+    @app_commands.describe(name="Name of the recurring static event to skip.")
+    @app_commands.autocomplete(name=_recurring_static_name_autocomplete)
+    async def skip_boss_command(self, interaction: discord.Interaction, name: str):
+        """Slash command to skip one occurrence without deleting its recurring event."""
+        if not self._has_management_permission(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have the required boss management role to use this command.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        async with self.UPDATE_MESSAGE_LOCKED:
+            try:
+                skipped_timestamp, next_timestamp, event = self._skip_static_occurrence(name)
+            except (LookupError, RuntimeError) as exc:
+                await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+                return
+
+        await interaction.followup.send(
+            f"✅ Skipped **{event['name']}** at <t:{skipped_timestamp}:F>.\n"
+            f"The next occurrence is <t:{next_timestamp}:F> which is <t:{next_timestamp}:R>.",
+            ephemeral=True,
+        )
+
     @boss_group.command(name="edit", description="Edit the next scheduled timer for a boss.")
     @app_commands.describe(
         boss_name="Name of the boss/event to edit.",
@@ -1774,8 +1852,6 @@ class BossTimers(commands.Cog):
                 response += "\n⚠️ This is a static event occurrence; the next occurrence reverts to the saved schedule."
 
         await interaction.followup.send(response, ephemeral=True)
-
-    # Skipping fixed-schedule bosses has been removed; command removed.
 
     @commands.Cog.listener()
     async def on_message(self, message):
