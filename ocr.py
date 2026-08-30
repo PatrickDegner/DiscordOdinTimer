@@ -327,34 +327,51 @@ def validate_remaining_seconds(total_seconds: int) -> str | None:
     return None
 
 
-def parse_remaining_seconds(text: str | None) -> int | None:
-    """Sums the h/m/s tokens of a timer string like '1h 4m' or '6m 52s'."""
+def _parse_time_components(text: str | None) -> dict[str, int]:
     if not text:
-        return None
+        return {}
 
-    total = 0
-    seen_units = set()
+    components = {}
     for value, unit in _TIME_TOKEN_PATTERN.findall(text):
-        if unit in seen_units:
+        if unit in components:
             continue
         digits = value.translate(_DIGIT_FIX)
         if not digits.isdigit():
             continue
-        seen_units.add(unit)
-        total += int(digits) * _UNIT_SECONDS[unit]
+        components[unit] = int(digits)
+    return components
 
-    return total if seen_units else None
+
+def parse_remaining_seconds(text: str | None) -> int | None:
+    """Sums the h/m/s tokens of a timer string like '1h 4m' or '6m 52s'."""
+    components = _parse_time_components(text)
+    if not components:
+        return None
+    return sum(value * _UNIT_SECONDS[unit] for unit, value in components.items())
+
+
+def _layout_restores_repeated_hour(timer_text: str, layout_text: str) -> bool:
+    """True when layout OCR preserves a repeated hour digit collapsed by the timer pass."""
+    timer = _parse_time_components(timer_text)
+    layout = _parse_time_components(layout_text)
+    layout_hour = layout.get('h')
+    timer_hour = timer.get('h')
+
+    return (
+        layout_hour in (11, 22)
+        and timer_hour == layout_hour // 11
+        and timer.get('m') == layout.get('m')
+        and timer.get('s') == layout.get('s')
+    )
 
 
 def _is_time_word(text: str) -> bool:
     """True for words like '17h' or '44m', false for the clock icon and the 'left' label."""
-    cleaned = text.strip()
-    if not cleaned:
-        return False
-    if not any(char.isalnum() for char in cleaned):
-        return False
-    # 'left' and other labels are long and purely alphabetic; misread digits are not.
-    return not (cleaned.isalpha() and len(cleaned) >= 3)
+    cleaned = text.strip('()[]{}.,:;')
+    return bool(
+        _TIME_TOKEN_PATTERN.fullmatch(cleaned)
+        or _DAY_TOKEN_PATTERN.fullmatch(cleaned)
+    )
 
 
 def _group_text_lines(data: dict) -> list[dict]:
@@ -465,7 +482,7 @@ def _extract_name_before_timer(lines: list[dict], timer_index: int) -> str | Non
     return _clean_boss_name(lines[timer_index - 1]['text'])
 
 
-def _read_timer_region(processed_img: Image.Image, line: dict, padding: int = 6) -> str:
+def _read_timer_region(processed_img: Image.Image, line: dict, padding: int = 8) -> str:
     """Re-reads only the timer words with the digits-only alphabet."""
     boxes = [box for box in line['boxes'] if _is_time_word(box['text'])]
     if not boxes:
@@ -576,6 +593,9 @@ def _parse_processed_card(processed_img):
 
     if total_seconds_remaining is None:
         # Fall back to the layout pass when the digits-only pass reads nothing.
+        timer_text = timer_line['text']
+        total_seconds_remaining = parse_remaining_seconds(timer_text)
+    elif _layout_restores_repeated_hour(timer_text, timer_line['text']):
         timer_text = timer_line['text']
         total_seconds_remaining = parse_remaining_seconds(timer_text)
 

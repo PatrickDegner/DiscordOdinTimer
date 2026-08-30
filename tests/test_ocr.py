@@ -185,6 +185,7 @@ def test_parse_remaining_seconds_ignores_values_longer_than_two_digits(ocr):
     ("17h", True),
     ("44m", True),
     ("ih", True),
+    ("Ilh", True),
     ("left", False),
     ("(", False),
     ("©", False),
@@ -192,6 +193,26 @@ def test_parse_remaining_seconds_ignores_values_longer_than_two_digits(ocr):
 ])
 def test_is_time_word_excludes_icons_and_the_left_label(ocr, word, expected):
     assert ocr._is_time_word(word) is expected
+
+
+def test_read_timer_region_keeps_eight_pixels_before_leading_digit(ocr, monkeypatch):
+    image = Image.new("L", (120, 80), 255)
+    line = {
+        "boxes": [
+            {"text": "11h", "left": 20, "top": 20, "right": 50, "bottom": 40},
+            {"text": "23m", "left": 60, "top": 20, "right": 100, "bottom": 40},
+        ]
+    }
+    seen = {}
+
+    def capture_region(region, **kwargs):
+        seen["size"] = region.size
+        return "11h23m"
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", capture_region)
+
+    assert ocr._read_timer_region(image, line) == "11h23m"
+    assert seen["size"] == (96, 36)
 
 
 # --- layout grouping ---
@@ -297,6 +318,18 @@ def test_whitelist_pass_overrides_a_misread_layout_pass(ocr, fake_ocr):
     _, timestamp, _ = ocr.parse_boss_info(image)
 
     assert 6235 <= timestamp - int(time.time()) <= 6245
+
+
+def test_layout_pass_restores_repeated_hour_digit_dropped_by_whitelist(ocr, fake_ocr):
+    image = fake_ocr(
+        [["Domain", "Ruler"], ["Nidhoggr"], ["©", "11h", "23m", "left"]],
+        timer_text="1h23m",
+    )
+
+    _, timestamp, boss_name = ocr.parse_boss_info(image)
+
+    assert boss_name == "Nidhoggr"
+    assert 40975 <= timestamp - int(time.time()) <= 40985
 
 
 def test_parse_boss_info_falls_back_when_whitelist_pass_is_empty(ocr, fake_ocr):
