@@ -832,7 +832,7 @@ class BossTimers(commands.Cog):
             data = {key: value for key, value in entry.items() if key != 'timestamp'}
             data['image'] = self._normalize_image_path(data.get('image'))
             data.setdefault('sent_alert', False)
-            data.setdefault('alert_seconds', 600)
+            data.setdefault('alert_seconds', 300)
             while timestamp in self.boss_timers:
                 timestamp += 1
             self.boss_timers[timestamp] = data
@@ -872,7 +872,7 @@ class BossTimers(commands.Cog):
         boss_name: str,
         future_timestamp: int,
         cropped_image: Image.Image | None = None,
-        alert_seconds: int = 600,
+        alert_seconds: int = 300,
     ) -> tuple[str | None, bool]:
         """Persists the timer image if needed and registers the timer."""
         library_image_path = self._find_library_boss_image(boss_name)

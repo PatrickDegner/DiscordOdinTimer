@@ -260,7 +260,7 @@ For every image it prints the source size and aspect ratio, how many pixels the 
   bot would register:
     name:    'Megir'
     spawns:  2026-08-28 19:20:08  (<t:1787937608:F>)
-    alert:   2026-08-28 19:10:08  (10m before)
+    alert:   2026-08-28 19:15:08  (5m before)
     image:   data/cropped_screenshot_Megir_1787937608.png  (cropped screenshot)
 ```
 

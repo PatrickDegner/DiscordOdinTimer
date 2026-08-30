@@ -251,6 +251,18 @@ def test_save_and_load_timers_roundtrip(cog):
     assert cog.boss_timers[future]["alert_seconds"] == 600
 
 
+def test_load_timer_without_alert_uses_five_minute_default(cog):
+    future = int(time.time()) + 3600
+    cog.timers_file.write_text(
+        json.dumps([{"timestamp": future, "name": "Legacy Boss"}]),
+        encoding="utf-8",
+    )
+
+    cog._load_timers()
+
+    assert cog.boss_timers[future]["alert_seconds"] == 300
+
+
 def test_sent_alert_survives_a_restart(cog):
     """A timer alerted before a restart must not alert again afterwards."""
     future = int(time.time()) + 300
@@ -525,7 +537,7 @@ def test_register_ocr_timer_saves_cropped_image_and_persists(cog, tmp_path, monk
     assert os.path.exists(image_path)
     assert image_path.startswith("data/")
     assert cog.boss_timers[future]["name"] == "Bellar"
-    assert cog.boss_timers[future]["alert_seconds"] == 600
+    assert cog.boss_timers[future]["alert_seconds"] == 300
     assert cog.timers_file.exists()
 
 
