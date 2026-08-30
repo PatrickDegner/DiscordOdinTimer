@@ -66,7 +66,7 @@ except ValueError as exc:
     DEFAULT_ZONE = None
 
 # Import OCR functions from the ocr directory
-from ocr import MAX_TIMER_SECONDS, parse_boss_info
+from ocr import MAX_TIMER_SECONDS, is_ignored_ocr_result, parse_boss_info, split_boss_cards
 
 
 class OcrTimeCorrectionModal(discord.ui.Modal, title="Correct remaining time"):
@@ -453,6 +453,89 @@ class BossTimers(commands.Cog):
 
         return self._build_ocr_preview_content(boss_name, future_timestamp, normalized), preview_file
 
+    @staticmethod
+    def _normalize_boss_name(boss_name: str) -> str:
+        return re.sub(r'\s+', ' ', boss_name).strip().casefold()
+
+    def _find_active_timer(self, boss_name: str, now: float | None = None) -> tuple[int, dict] | None:
+        """Returns the soonest future timer with the same normalized boss name."""
+        now_timestamp = time.time() if now is None else now
+        target = self._normalize_boss_name(boss_name)
+        matches = [
+            (timestamp, data)
+            for timestamp, data in self.boss_timers.items()
+            if timestamp > now_timestamp
+            and self._normalize_boss_name(data.get('name', '')) == target
+        ]
+        return min(matches, key=lambda item: item[0]) if matches else None
+
+    async def _prepare_ocr_confirmations(self, image: Image.Image, requester_id: int):
+        """Parses every detected card and builds independent confirmation views."""
+        cards = split_boss_cards(image)
+        confirmations = []
+        failures = []
+        skipped_existing = []
+        accepted_names = set()
+
+        for card_number, card in enumerate(cards, start=1):
+            result_message, future_timestamp, boss_name = await asyncio.to_thread(parse_boss_info, card)
+            if is_ignored_ocr_result(result_message):
+                continue
+            if future_timestamp is None or not boss_name:
+                failures.append((card_number, result_message))
+                continue
+
+            normalized_name = self._normalize_boss_name(boss_name)
+            active_timer = self._find_active_timer(boss_name)
+            if active_timer is not None:
+                skipped_existing.append((card_number, boss_name, active_timer[0]))
+                continue
+            if normalized_name in accepted_names:
+                skipped_existing.append((card_number, boss_name, None))
+                continue
+            accepted_names.add(normalized_name)
+
+            cropped_image = self._crop_image_for_timer(card)
+            preview_content, preview_file = self._build_ocr_preview(
+                boss_name, future_timestamp, cropped_image
+            )
+            if len(cards) > 1:
+                preview_content = f"Card {card_number}/{len(cards)}\n{preview_content}"
+            view = OcrConfirmView(
+                self,
+                boss_name,
+                future_timestamp,
+                cropped_image,
+                requester_id,
+            )
+            confirmations.append((preview_content, preview_file, view))
+
+        return confirmations, failures, skipped_existing, len(cards)
+
+    @staticmethod
+    def _format_ocr_failures(failures: list[tuple[int, str]], card_count: int) -> str:
+        if card_count == 1:
+            return f"⚠️ {failures[0][1]}"
+
+        lines = [f"⚠️ Could not read {len(failures)} of {card_count} detected cards:"]
+        for card_number, message in failures:
+            summary = message.splitlines()[0] if message else "Unknown OCR error."
+            lines.append(f"- Card {card_number}: {summary}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_existing_ocr_skips(skipped: list[tuple[int, str, int | None]]) -> str:
+        lines = ["ℹ️ Skipped bosses that already have a timer:"]
+        for card_number, boss_name, timestamp in skipped:
+            if timestamp is None:
+                lines.append(f"- Card {card_number}: **{boss_name}** (duplicate in this image)")
+            else:
+                lines.append(
+                    f"- Card {card_number}: **{boss_name}** already spawns "
+                    f"<t:{timestamp}:F> (<t:{timestamp}:R>)"
+                )
+        return "\n".join(lines)
+
     def _build_event_message_content(self, boss_name: str, timestamp: int, boss_data: dict | None) -> str:
         if boss_data is None:
             boss_data = {}
@@ -749,7 +832,7 @@ class BossTimers(commands.Cog):
             data = {key: value for key, value in entry.items() if key != 'timestamp'}
             data['image'] = self._normalize_image_path(data.get('image'))
             data.setdefault('sent_alert', False)
-            data.setdefault('alert_seconds', 600)
+            data.setdefault('alert_seconds', 300)
             while timestamp in self.boss_timers:
                 timestamp += 1
             self.boss_timers[timestamp] = data
@@ -789,7 +872,7 @@ class BossTimers(commands.Cog):
         boss_name: str,
         future_timestamp: int,
         cropped_image: Image.Image | None = None,
-        alert_seconds: int = 600,
+        alert_seconds: int = 300,
     ) -> tuple[str | None, bool]:
         """Persists the timer image if needed and registers the timer."""
         library_image_path = self._find_library_boss_image(boss_name)
@@ -1513,29 +1596,27 @@ class BossTimers(commands.Cog):
             return
 
         try:
-            result_message, future_timestamp, parsed_boss_name = parse_boss_info(image_to_process)
-            if future_timestamp is None or not parsed_boss_name:
-                await interaction.followup.send(f"⚠️ {result_message}", ephemeral=True)
-                return
-
-            cropped_image = self._crop_image_for_timer(image_to_process)
-            preview_content, preview_file = self._build_ocr_preview(
-                parsed_boss_name, future_timestamp, cropped_image
+            confirmations, failures, skipped_existing, card_count = await self._prepare_ocr_confirmations(
+                image_to_process, interaction.user.id
             )
-            view = OcrConfirmView(
-                self,
-                parsed_boss_name,
-                future_timestamp,
-                cropped_image,
-                interaction.user.id,
-            )
-            view.message = await interaction.followup.send(
-                content=preview_content,
-                file=preview_file,
-                view=view,
-                ephemeral=True,
-                wait=True,
-            )
+            for preview_content, preview_file, view in confirmations:
+                view.message = await interaction.followup.send(
+                    content=preview_content,
+                    file=preview_file,
+                    view=view,
+                    ephemeral=True,
+                    wait=True,
+                )
+            if skipped_existing:
+                await interaction.followup.send(
+                    self._format_existing_ocr_skips(skipped_existing),
+                    ephemeral=True,
+                )
+            if failures:
+                await interaction.followup.send(
+                    self._format_ocr_failures(failures, card_count),
+                    ephemeral=True,
+                )
         except Exception as exc:
             await interaction.followup.send(f"An unexpected error occurred: {exc}", ephemeral=True)
 
@@ -1672,28 +1753,19 @@ class BossTimers(commands.Cog):
             try:
                 image_bytes = await self._read_attachment_with_retries(image_attachment)
                 img = Image.open(io.BytesIO(image_bytes))
-                result_message, future_timestamp, boss_name = parse_boss_info(img)
-
-                if future_timestamp is None or not boss_name:
-                    await message.channel.send(f"⚠️ {result_message}")
-                    return
-
-                cropped_image = self._crop_image_for_timer(img)
-                preview_content, preview_file = self._build_ocr_preview(
-                    boss_name, future_timestamp, cropped_image
+                confirmations, failures, skipped_existing, card_count = await self._prepare_ocr_confirmations(
+                    img, message.author.id
                 )
-                view = OcrConfirmView(
-                    self,
-                    boss_name,
-                    future_timestamp,
-                    cropped_image,
-                    message.author.id,
-                )
-                view.message = await message.channel.send(
-                    content=preview_content,
-                    file=preview_file,
-                    view=view,
-                )
+                for preview_content, preview_file, view in confirmations:
+                    view.message = await message.channel.send(
+                        content=preview_content,
+                        file=preview_file,
+                        view=view,
+                    )
+                if skipped_existing:
+                    await message.channel.send(self._format_existing_ocr_skips(skipped_existing))
+                if failures:
+                    await message.channel.send(self._format_ocr_failures(failures, card_count))
 
             except (aiohttp.ClientConnectorError, OSError) as e:
                 await message.channel.send("An unexpected network error occurred while fetching the image. Please try again.")

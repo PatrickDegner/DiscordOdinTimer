@@ -258,6 +258,140 @@ def test_read_attachment_with_retries_raises_after_max_attempts():
         raise AssertionError("Expected RuntimeError after retry exhaustion")
 
 
+def test_prepare_ocr_confirmations_builds_one_view_per_readable_card(cog, monkeypatch):
+    cards = [object(), object(), object()]
+    monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
+    results = iter([
+        ("first", 1000, "Svart"),
+        ("unreadable", None, None),
+        ("third", 3000, "Draugr"),
+    ])
+    monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
+    monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
+    monkeypatch.setattr(
+        cog,
+        "_build_ocr_preview",
+        lambda name, timestamp, card: (f"preview {name}", object()),
+    )
+
+    confirmations, failures, skipped_existing, card_count = asyncio.run(
+        cog._prepare_ocr_confirmations(object(), requester_id=42)
+    )
+
+    assert card_count == 3
+    assert [view.boss_name for _, _, view in confirmations] == ["Svart", "Draugr"]
+    assert confirmations[0][0].startswith("Card 1/3")
+    assert confirmations[1][0].startswith("Card 3/3")
+    assert failures == [(2, "unreadable")]
+    assert skipped_existing == []
+
+
+def test_prepare_ocr_confirmations_silently_ignores_spawning_cards(cog, monkeypatch):
+    cards = [object(), object()]
+    monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
+    monkeypatch.setattr(module, "is_ignored_ocr_result", lambda message: message == "ignored")
+    results = iter([
+        ("ignored", None, None),
+        ("readable", 3000, "Draugr"),
+    ])
+    monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
+    monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
+    monkeypatch.setattr(
+        cog,
+        "_build_ocr_preview",
+        lambda name, timestamp, card: (f"preview {name}", object()),
+    )
+
+    confirmations, failures, skipped_existing, card_count = asyncio.run(
+        cog._prepare_ocr_confirmations(object(), requester_id=42)
+    )
+
+    assert card_count == 2
+    assert [view.boss_name for _, _, view in confirmations] == ["Draugr"]
+    assert failures == []
+    assert skipped_existing == []
+
+
+def test_prepare_ocr_confirmations_only_prompts_for_new_bosses(cog, monkeypatch):
+    now = int(time.time())
+    cog.boss_timers = {
+        now + 3600: {"name": "  MEGIR  "},
+        now - 60: {"name": "Expired Boss"},
+    }
+    cards = [object(), object(), object()]
+    monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
+    results = iter([
+        ("existing", now + 7200, "Megir"),
+        ("new after spawning", now + 1800, "Helgarm"),
+        ("expired may return", now + 2400, "Expired   Boss"),
+    ])
+    monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
+    monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
+    monkeypatch.setattr(
+        cog,
+        "_build_ocr_preview",
+        lambda name, timestamp, card: (f"preview {name}", object()),
+    )
+
+    confirmations, failures, skipped_existing, card_count = asyncio.run(
+        cog._prepare_ocr_confirmations(object(), requester_id=42)
+    )
+
+    assert card_count == 3
+    assert [view.boss_name for _, _, view in confirmations] == ["Helgarm", "Expired   Boss"]
+    assert failures == []
+    assert skipped_existing == [(1, "Megir", now + 3600)]
+
+
+def test_prepare_ocr_confirmations_skips_duplicate_names_in_same_image(cog, monkeypatch):
+    now = int(time.time())
+    cards = [object(), object()]
+    monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
+    results = iter([
+        ("first", now + 1800, "Sinmara"),
+        ("duplicate", now + 1800, " sinmara "),
+    ])
+    monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
+    monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
+    monkeypatch.setattr(
+        cog,
+        "_build_ocr_preview",
+        lambda name, timestamp, card: (f"preview {name}", object()),
+    )
+
+    confirmations, failures, skipped_existing, _ = asyncio.run(
+        cog._prepare_ocr_confirmations(object(), requester_id=42)
+    )
+
+    assert [view.boss_name for _, _, view in confirmations] == ["Sinmara"]
+    assert failures == []
+    assert skipped_existing == [(2, " sinmara ", None)]
+
+
+def test_format_existing_ocr_skips_lists_current_timer_and_image_duplicate():
+    content = module.BossTimers._format_existing_ocr_skips([
+        (1, "Megir", 2000),
+        (3, "Sinmara", None),
+    ])
+
+    assert "Megir" in content
+    assert "<t:2000:F>" in content
+    assert "Sinmara" in content
+    assert "duplicate in this image" in content
+
+
+def test_format_ocr_failures_summarizes_multi_card_errors():
+    content = module.BossTimers._format_ocr_failures(
+        [(2, "Could not find a timer.\nRaw details"), (4, "No text found.")],
+        card_count=4,
+    )
+
+    assert "2 of 4" in content
+    assert "Card 2: Could not find a timer." in content
+    assert "Raw details" not in content
+    assert "Card 4: No text found." in content
+
+
 def test_safe_edit_update_message_preserves_existing_attachments_without_reupload():
     class _MessageStub:
         def __init__(self):

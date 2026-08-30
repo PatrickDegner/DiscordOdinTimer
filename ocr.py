@@ -20,6 +20,15 @@ if tess_path:
 # Plausibility bounds for a parsed respawn timer.
 MIN_TIMER_SECONDS = 1
 MAX_TIMER_SECONDS = 24 * 60 * 60
+IGNORED_SPAWNING_RESULT = "IGNORED: Boss is currently spawning."
+
+MIN_CARD_ASPECT = 0.30
+MAX_CARD_ASPECT = 0.55
+MIN_CARD_COVERAGE = 0.60
+MAX_CARDS_PER_IMAGE = 10
+MIN_MOBILE_CARD_ASPECT = 0.90
+MAX_MOBILE_CARD_ASPECT = 1.50
+TARGET_MOBILE_CARD_ASPECT = 1.20
 
 _DEBUG_TEXT_LIMIT = 400
 
@@ -57,6 +66,178 @@ def ocr_debug_snippet(text: str | None, limit: int = _DEBUG_TEXT_LIMIT) -> str:
     if len(cleaned) > limit:
         cleaned = cleaned[:limit] + '...'
     return f"\nRaw OCR text:\n```\n{cleaned}\n```"
+
+
+def is_ignored_ocr_result(message: str | None) -> bool:
+    return message == IGNORED_SPAWNING_RESULT
+
+
+def _cluster_positions(positions: list[int], tolerance: int) -> list[int]:
+    """Combines nearby detections of the same card border."""
+    clusters = []
+    for position in sorted(positions):
+        if not clusters or position - clusters[-1][-1] > tolerance:
+            clusters.append([position])
+        else:
+            clusters[-1].append(position)
+    return [round(sum(cluster) / len(cluster)) for cluster in clusters]
+
+
+def _has_visible_card_content(image: Image.Image) -> bool:
+    """Rejects empty black grid cells while retaining dark cards with visible artwork."""
+    gray = np.array(image.convert('L'))
+    inset_y = max(1, image.height // 20)
+    inset_x = max(1, image.width // 20)
+    interior = gray[inset_y:-inset_y, inset_x:-inset_x]
+    if interior.size == 0:
+        return False
+    return float(np.percentile(interior, 95) - np.percentile(interior, 5)) >= 20
+
+
+def _snap_grid_boundaries(scores: np.ndarray, count: int, tolerance: int) -> list[int] | None:
+    """Snaps evenly spaced grid boundaries to nearby edge-projection peaks."""
+    length = len(scores)
+    minimum_strength = max(12.0, float(np.percentile(scores, 90)))
+    boundaries = [0]
+    for index in range(1, count):
+        expected = round(length * index / count)
+        start = max(0, expected - tolerance)
+        stop = min(length, expected + tolerance + 1)
+        position = start + int(np.argmax(scores[start:stop]))
+        if scores[position] < minimum_strength:
+            return None
+        boundaries.append(position)
+    boundaries.append(length)
+    return boundaries
+
+
+def split_boss_cards(image: Image.Image) -> list[Image.Image]:
+    """Splits bordered portrait rows or mobile card grids when confidently detected."""
+    if not isinstance(image, Image.Image) or image.width < 2 or image.height < 2:
+        return [image]
+
+    rgb = np.array(image.convert('RGB'))
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 35, 110)
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180,
+        threshold=max(25, image.height // 3),
+        minLineLength=max(20, int(image.height * 0.65)),
+        maxLineGap=max(4, int(image.height * 0.08)),
+    )
+    if lines is None:
+        return [image]
+
+    max_horizontal_drift = max(2, image.width // 250)
+    border_positions = []
+    for line in lines[:, 0]:
+        x1, _, x2, _ = (int(value) for value in line)
+        if abs(x1 - x2) <= max_horizontal_drift:
+            border_positions.append(round((x1 + x2) / 2))
+
+    tolerance = max(3, image.width // 200)
+    borders = _cluster_positions(border_positions, tolerance)
+    if not borders:
+        return [image]
+
+    if borders[0] <= tolerance * 2:
+        borders[0] = 0
+    else:
+        borders.insert(0, 0)
+    if image.width - 1 - borders[-1] <= tolerance * 2:
+        borders[-1] = image.width
+    else:
+        borders.append(image.width)
+
+    portrait_cards = []
+    portrait_covered_width = 0
+    for left, right in zip(borders, borders[1:]):
+        width = right - left
+        aspect = width / image.height
+        if MIN_CARD_ASPECT <= aspect <= MAX_CARD_ASPECT:
+            portrait_cards.append(image.crop((left, 0, right, image.height)))
+            portrait_covered_width += width
+
+    if (
+        2 <= len(portrait_cards) <= MAX_CARDS_PER_IMAGE
+        and portrait_covered_width / image.width >= MIN_CARD_COVERAGE
+    ):
+        return portrait_cards
+
+    vertical_scores = edges.mean(axis=0)
+    horizontal_scores = edges.mean(axis=1)
+
+    best_mobile_row = None
+    best_mobile_row_score = None
+    for column_count in range(3, MAX_CARDS_PER_IMAGE + 1):
+        cell_aspect = (image.width / column_count) / image.height
+        if not MIN_MOBILE_CARD_ASPECT <= cell_aspect <= MAX_MOBILE_CARD_ASPECT:
+            continue
+        x_boundaries = _snap_grid_boundaries(
+            vertical_scores,
+            column_count,
+            max(5, image.width // 60),
+        )
+        if x_boundaries is None:
+            continue
+        score = abs(cell_aspect - TARGET_MOBILE_CARD_ASPECT)
+        if best_mobile_row_score is None or score < best_mobile_row_score:
+            best_mobile_row_score = score
+            best_mobile_row = x_boundaries
+
+    if best_mobile_row is not None:
+        cards = []
+        for left, right in zip(best_mobile_row, best_mobile_row[1:]):
+            card = image.crop((left, 0, right, image.height))
+            if _has_visible_card_content(card):
+                cards.append(card)
+        if 2 <= len(cards) <= MAX_CARDS_PER_IMAGE:
+            return cards
+
+    best_grid = None
+    best_score = None
+    for row_count in range(2, 5):
+        for column_count in range(3, 7):
+            if row_count * column_count > MAX_CARDS_PER_IMAGE:
+                continue
+            cell_aspect = (image.width / column_count) / (image.height / row_count)
+            if not MIN_MOBILE_CARD_ASPECT <= cell_aspect <= MAX_MOBILE_CARD_ASPECT:
+                continue
+
+            x_boundaries = _snap_grid_boundaries(
+                vertical_scores,
+                column_count,
+                max(5, image.width // 60),
+            )
+            y_boundaries = _snap_grid_boundaries(
+                horizontal_scores,
+                row_count,
+                max(5, image.height // 40),
+            )
+            if x_boundaries is None or y_boundaries is None:
+                continue
+
+            score = abs(cell_aspect - TARGET_MOBILE_CARD_ASPECT)
+            if best_score is None or score < best_score:
+                best_score = score
+                best_grid = (x_boundaries, y_boundaries)
+
+    if best_grid is None:
+        return [image]
+
+    x_boundaries, y_boundaries = best_grid
+    cards = []
+    for top, bottom in zip(y_boundaries, y_boundaries[1:]):
+        for left, right in zip(x_boundaries, x_boundaries[1:]):
+            card = image.crop((left, top, right, bottom))
+            if _has_visible_card_content(card):
+                cards.append(card)
+
+    if not 2 <= len(cards) <= MAX_CARDS_PER_IMAGE:
+        return [image]
+    return cards
 
 
 def _upscale(image: Image.Image, factor: int = 4) -> np.ndarray:
@@ -205,12 +386,25 @@ def _find_ruler_line_index(lines: list[dict]) -> int | None:
     return None
 
 
-def _find_timer_line_index(lines: list[dict], after: int) -> int | None:
+def _find_timer_line_index(lines: list[dict], after: int, require_full_token: bool = False) -> int | None:
     """Returns the last line below the label that contains a duration token."""
     for index in range(len(lines) - 1, after, -1):
+        if require_full_token:
+            words = (word.strip('()[]{}.,:;') for word in lines[index]['words'])
+            if any(_TIME_TOKEN_PATTERN.fullmatch(word) for word in words):
+                return index
+            continue
         if _TIME_TOKEN_PATTERN.search(lines[index]['text']):
             return index
     return None
+
+
+def _has_spawning_status(lines: list[dict], after: int) -> bool:
+    """True when a status row below the ruler label says Spawning."""
+    return any(
+        'spawning' in (_letters_only(word) for word in line['words'])
+        for line in lines[after + 1:]
+    )
 
 
 def _clean_boss_name(candidate: str) -> str | None:
@@ -232,6 +426,13 @@ def _extract_boss_name(lines: list[dict], ruler_index: int, timer_index: int) ->
         if name:
             return name
     return None
+
+
+def _extract_name_before_timer(lines: list[dict], timer_index: int) -> str | None:
+    """Uses the line directly above a timer when the ruler label was garbled."""
+    if timer_index <= 0:
+        return None
+    return _clean_boss_name(lines[timer_index - 1]['text'])
 
 
 def _read_timer_region(processed_img: Image.Image, line: dict, padding: int = 6) -> str:
@@ -265,7 +466,7 @@ def parse_boss_info(image_source):
         first_result = None
         for processed_img in _candidate_images(image_source):
             result = _parse_processed_card(processed_img)
-            if result[1] is not None:
+            if result[1] is not None or is_ignored_ocr_result(result[0]):
                 return result
             if first_result is None:
                 first_result = result
@@ -293,21 +494,30 @@ def _parse_processed_card(processed_img):
         return "ERROR: No text was extracted from the image by Tesseract OCR.", None, None
 
     ruler_index = _find_ruler_line_index(lines)
-    if ruler_index is None:
-        return (
-            "Could not find a 'Domain Ruler' label in the extracted text."
-            f"{ocr_debug_snippet(full_text)}"
-        ), None, None
+    if _has_spawning_status(lines, after=ruler_index if ruler_index is not None else -1):
+        return IGNORED_SPAWNING_RESULT, None, None
 
-    timer_index = _find_timer_line_index(lines, after=ruler_index)
+    timer_index = _find_timer_line_index(
+        lines,
+        after=ruler_index if ruler_index is not None else -1,
+        require_full_token=ruler_index is None,
+    )
     if timer_index is None:
+        if ruler_index is None:
+            return (
+                "Could not find a 'Domain Ruler' label in the extracted text."
+                f"{ocr_debug_snippet(full_text)}"
+            ), None, None
         return (
             "Could not find a remaining time (hours/minutes/seconds) below the "
             "'Domain Ruler' label."
             f"{ocr_debug_snippet(full_text)}"
         ), None, None
 
-    boss_name = _extract_boss_name(lines, ruler_index, timer_index)
+    if ruler_index is None:
+        boss_name = _extract_name_before_timer(lines, timer_index)
+    else:
+        boss_name = _extract_boss_name(lines, ruler_index, timer_index)
     if not boss_name:
         return (
             "ERROR: A timer was found but no boss name could be read."
