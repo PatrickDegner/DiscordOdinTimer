@@ -83,6 +83,16 @@ def _cluster_positions(positions: list[int], tolerance: int) -> list[int]:
     return [round(sum(cluster) / len(cluster)) for cluster in clusters]
 
 
+def _hough_segments(lines) -> np.ndarray:
+    """Normalizes OpenCV HoughLinesP output to one row per x1/y1/x2/y2 segment."""
+    if lines is None:
+        return np.empty((0, 4), dtype=np.int32)
+    values = np.asarray(lines)
+    if values.size == 0 or values.size % 4 != 0:
+        return np.empty((0, 4), dtype=np.int32)
+    return values.reshape(-1, 4)
+
+
 def _has_visible_card_content(image: Image.Image) -> bool:
     """Rejects empty black grid cells while retaining dark cards with visible artwork."""
     gray = np.array(image.convert('L'))
@@ -127,12 +137,13 @@ def split_boss_cards(image: Image.Image) -> list[Image.Image]:
         minLineLength=max(20, int(image.height * 0.65)),
         maxLineGap=max(4, int(image.height * 0.08)),
     )
-    if lines is None:
+    segments = _hough_segments(lines)
+    if not len(segments):
         return [image]
 
     max_horizontal_drift = max(2, image.width // 250)
     border_positions = []
-    for line in lines[:, 0]:
+    for line in segments:
         x1, _, x2, _ = (int(value) for value in line)
         if abs(x1 - x2) <= max_horizontal_drift:
             border_positions.append(round((x1 + x2) / 2))

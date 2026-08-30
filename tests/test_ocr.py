@@ -49,6 +49,23 @@ def fake_ocr(ocr, monkeypatch):
 
 # --- multi-card segmentation ---
 
+@pytest.mark.parametrize("shape", [(2, 1, 4), (2, 4), (8,)])
+def test_hough_segments_normalizes_opencv_return_shapes(ocr, shape):
+    lines = np.array([
+        [10, 0, 10, 100],
+        [20, 0, 20, 100],
+    ], dtype=np.int32).reshape(shape)
+
+    segments = ocr._hough_segments(lines)
+
+    assert segments.shape == (2, 4)
+    assert segments.tolist() == [[10, 0, 10, 100], [20, 0, 20, 100]]
+
+
+def test_hough_segments_handles_none_and_malformed_values(ocr):
+    assert ocr._hough_segments(None).shape == (0, 4)
+    assert ocr._hough_segments(np.array([1, 2, 3])).shape == (0, 4)
+
 def test_split_boss_cards_finds_bordered_portrait_cards(ocr):
     canvas = np.full((380, 640, 3), 12, dtype=np.uint8)
     for left in (2, 162, 322, 482):
