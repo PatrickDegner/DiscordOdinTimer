@@ -254,6 +254,40 @@ def test_parse_boss_info_uses_the_whitelist_pass(ocr, fake_ocr):
     assert "Megir" in message
 
 
+def test_parse_boss_info_only_sends_lower_half_to_layout_ocr(ocr, monkeypatch):
+    image = Image.new("RGB", (100, 200))
+    seen = {}
+
+    def capture_layout(processed, **kwargs):
+        seen["size"] = processed.size
+        seen["timeout"] = kwargs.get("timeout")
+        return build_ocr_data(CARD_LINES)
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_data", capture_layout)
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", lambda *a, **k: "17h44m")
+
+    _, timestamp, boss_name = ocr.parse_boss_info(image)
+
+    assert boss_name == "Megir"
+    assert timestamp is not None
+    assert seen == {"size": (400, 400), "timeout": ocr.OCR_TIMEOUT_SECONDS}
+
+
+def test_parse_boss_info_reports_tesseract_timeout(ocr, monkeypatch):
+    image = Image.new("RGB", (100, 200))
+    monkeypatch.setattr(
+        ocr.pytesseract,
+        "image_to_data",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("Tesseract process timeout")),
+    )
+
+    message, timestamp, boss_name = ocr.parse_boss_info(image)
+
+    assert message == "ERROR: OCR timed out while processing this image."
+    assert timestamp is None
+    assert boss_name is None
+
+
 def test_whitelist_pass_overrides_a_misread_layout_pass(ocr, fake_ocr):
     """Layout reads '(S ih 44m'; the digits-only pass is authoritative."""
     image = fake_ocr(
@@ -292,11 +326,11 @@ def test_parse_boss_info_reports_missing_domain_ruler_label(ocr, fake_ocr):
     message, timestamp, _ = ocr.parse_boss_info(image)
 
     assert timestamp is None
-    assert "Domain Ruler" in message
+    assert "timer row" in message
     assert "some unrelated interface" in message
 
 
-def test_parse_boss_info_recovers_name_when_ruler_label_is_garbled(ocr, fake_ocr):
+def test_parse_boss_info_accepts_timer_when_ruler_label_is_garbled(ocr, fake_ocr):
     image = fake_ocr(
         [["noise"], ["somal", "Rte"], ["Svart", "-"], ["©", "15h", "9m", "left"]],
         timer_text="15h9m",
@@ -306,6 +340,19 @@ def test_parse_boss_info_recovers_name_when_ruler_label_is_garbled(ocr, fake_ocr
 
     assert boss_name == "Svart"
     assert 54535 <= timestamp - int(time.time()) <= 54545
+
+
+def test_parse_boss_info_ignores_the_absolute_card(ocr, fake_ocr):
+    image = fake_ocr(
+        [["The", "Absolute"], ["Surtr"], ["(", "Spawning"]],
+        timer_text="",
+    )
+
+    message, timestamp, boss_name = ocr.parse_boss_info(image)
+
+    assert message == ocr.IGNORED_ABSOLUTE_RESULT
+    assert timestamp is None
+    assert boss_name is None
 
 
 def test_parse_boss_info_ignores_spawning_when_ruler_label_is_garbled(ocr, fake_ocr):
@@ -340,6 +387,19 @@ def test_parse_boss_info_ignores_spawning_status(ocr, fake_ocr):
     assert ocr.is_ignored_ocr_result(message)
     assert timestamp is None
     assert boss_name is None
+
+
+def test_parse_boss_info_ignores_timer_with_days(ocr, fake_ocr):
+    image = fake_ocr(
+        [["Domain", "Ruler"], ["Garmwalker"], ["(", "1d", "1h", "left"]],
+        timer_text="1h",
+    )
+
+    message, timestamp, boss_name = ocr.parse_boss_info(image)
+
+    assert ocr.is_ignored_ocr_result(message)
+    assert timestamp is None
+    assert boss_name == "Garmwalker"
 
 
 def test_parse_boss_info_reports_empty_ocr_output(ocr, fake_ocr):

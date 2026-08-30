@@ -21,6 +21,8 @@ if tess_path:
 MIN_TIMER_SECONDS = 1
 MAX_TIMER_SECONDS = 24 * 60 * 60
 IGNORED_SPAWNING_RESULT = "IGNORED: Boss is currently spawning."
+IGNORED_DAY_TIMER_RESULT = "IGNORED: Boss timer includes days."
+IGNORED_ABSOLUTE_RESULT = "IGNORED: The Absolute cards are not Domain Rulers."
 
 MIN_CARD_ASPECT = 0.30
 MAX_CARD_ASPECT = 0.55
@@ -31,6 +33,8 @@ MAX_MOBILE_CARD_ASPECT = 1.50
 TARGET_MOBILE_CARD_ASPECT = 1.20
 
 _DEBUG_TEXT_LIMIT = 400
+OCR_TIMEOUT_SECONDS = 5
+LAYOUT_REGION_TOP_RATIO = 0.50
 
 # Pass 1 reads the layout with a normal alphabet so the boss name stays readable.
 LAYOUT_CONFIG = r'--oem 1 --psm 6 -l eng'
@@ -56,6 +60,7 @@ _DIGIT_FIX = str.maketrans({
 
 # Two characters max: hours <= 24, minutes and seconds <= 59.
 _TIME_TOKEN_PATTERN = re.compile(r'([0-9iIlL|!tToOqQsSzZbBgG]{1,2})\s*([hms])')
+_DAY_TOKEN_PATTERN = re.compile(r'[0-9iIlL|!tToOqQsSzZbBgG]{1,2}\s*d\b', re.IGNORECASE)
 
 
 def ocr_debug_snippet(text: str | None, limit: int = _DEBUG_TEXT_LIMIT) -> str:
@@ -69,7 +74,11 @@ def ocr_debug_snippet(text: str | None, limit: int = _DEBUG_TEXT_LIMIT) -> str:
 
 
 def is_ignored_ocr_result(message: str | None) -> bool:
-    return message == IGNORED_SPAWNING_RESULT
+    return message in {
+        IGNORED_SPAWNING_RESULT,
+        IGNORED_DAY_TIMER_RESULT,
+        IGNORED_ABSOLUTE_RESULT,
+    }
 
 
 def _cluster_positions(positions: list[int], tolerance: int) -> list[int]:
@@ -397,15 +406,26 @@ def _find_ruler_line_index(lines: list[dict]) -> int | None:
     return None
 
 
+def _has_absolute_label(lines: list[dict]) -> bool:
+    for line in lines:
+        words = [_letters_only(word) for word in line['words']]
+        if 'the' in words and 'absolute' in words:
+            return True
+    return False
+
+
 def _find_timer_line_index(lines: list[dict], after: int, require_full_token: bool = False) -> int | None:
     """Returns the last line below the label that contains a duration token."""
     for index in range(len(lines) - 1, after, -1):
         if require_full_token:
             words = (word.strip('()[]{}.,:;') for word in lines[index]['words'])
-            if any(_TIME_TOKEN_PATTERN.fullmatch(word) for word in words):
+            if any(
+                _TIME_TOKEN_PATTERN.fullmatch(word) or _DAY_TOKEN_PATTERN.fullmatch(word)
+                for word in words
+            ):
                 return index
             continue
-        if _TIME_TOKEN_PATTERN.search(lines[index]['text']):
+        if _TIME_TOKEN_PATTERN.search(lines[index]['text']) or _DAY_TOKEN_PATTERN.search(lines[index]['text']):
             return index
     return None
 
@@ -440,7 +460,6 @@ def _extract_boss_name(lines: list[dict], ruler_index: int, timer_index: int) ->
 
 
 def _extract_name_before_timer(lines: list[dict], timer_index: int) -> str | None:
-    """Uses the line directly above a timer when the ruler label was garbled."""
     if timer_index <= 0:
         return None
     return _clean_boss_name(lines[timer_index - 1]['text'])
@@ -460,7 +479,11 @@ def _read_timer_region(processed_img: Image.Image, line: dict, padding: int = 6)
         return ''
 
     region = processed_img.crop((left, top, right, bottom))
-    return pytesseract.image_to_string(region, config=TIMER_CONFIG)
+    return pytesseract.image_to_string(
+        region,
+        config=TIMER_CONFIG,
+        timeout=OCR_TIMEOUT_SECONDS,
+    )
 
 
 def parse_boss_info(image_source):
@@ -487,16 +510,23 @@ def parse_boss_info(image_source):
         return (
             "ERROR: Tesseract OCR engine not found. Please install Tesseract and configure its path if necessary."
         ), None, None
+    except RuntimeError as exc:
+        if 'timeout' in str(exc).lower():
+            return "ERROR: OCR timed out while processing this image.", None, None
+        return f"An unexpected OCR error occurred: {exc}", None, None
     except Exception as e:
         return f"An unexpected error occurred: {e}", None, None
 
 
 def _parse_processed_card(processed_img):
     """Runs both Tesseract passes over one binarized image."""
+    layout_top = int(processed_img.height * LAYOUT_REGION_TOP_RATIO)
+    layout_img = processed_img.crop((0, layout_top, processed_img.width, processed_img.height))
     data = pytesseract.image_to_data(
-        processed_img,
+        layout_img,
         config=LAYOUT_CONFIG,
         output_type=pytesseract.Output.DICT,
+        timeout=OCR_TIMEOUT_SECONDS,
     )
     lines = _group_text_lines(data)
     full_text = '\n'.join(line['text'] for line in lines)
@@ -505,6 +535,8 @@ def _parse_processed_card(processed_img):
         return "ERROR: No text was extracted from the image by Tesseract OCR.", None, None
 
     ruler_index = _find_ruler_line_index(lines)
+    if _has_absolute_label(lines):
+        return IGNORED_ABSOLUTE_RESULT, None, None
     if _has_spawning_status(lines, after=ruler_index if ruler_index is not None else -1):
         return IGNORED_SPAWNING_RESULT, None, None
 
@@ -516,7 +548,7 @@ def _parse_processed_card(processed_img):
     if timer_index is None:
         if ruler_index is None:
             return (
-                "Could not find a 'Domain Ruler' label in the extracted text."
+                "Could not find a timer row in the extracted card text."
                 f"{ocr_debug_snippet(full_text)}"
             ), None, None
         return (
@@ -536,7 +568,10 @@ def _parse_processed_card(processed_img):
         ), None, None
 
     timer_line = lines[timer_index]
-    timer_text = _read_timer_region(processed_img, timer_line)
+    if _DAY_TOKEN_PATTERN.search(timer_line['text']):
+        return IGNORED_DAY_TIMER_RESULT, None, boss_name
+
+    timer_text = _read_timer_region(layout_img, timer_line)
     total_seconds_remaining = parse_remaining_seconds(timer_text)
 
     if total_seconds_remaining is None:

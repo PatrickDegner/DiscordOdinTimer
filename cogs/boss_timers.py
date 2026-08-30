@@ -66,7 +66,13 @@ except ValueError as exc:
     DEFAULT_ZONE = None
 
 # Import OCR functions from the ocr directory
-from ocr import MAX_TIMER_SECONDS, is_ignored_ocr_result, parse_boss_info, split_boss_cards
+from ocr import (
+    IGNORED_DAY_TIMER_RESULT,
+    MAX_TIMER_SECONDS,
+    is_ignored_ocr_result,
+    parse_boss_info,
+    split_boss_cards,
+)
 
 
 class OcrTimeCorrectionModal(discord.ui.Modal, title="Correct remaining time"):
@@ -475,11 +481,17 @@ class BossTimers(commands.Cog):
         confirmations = []
         failures = []
         skipped_existing = []
+        skipped_long_timers = []
+        skipped_ignored = []
         accepted_names = set()
 
         for card_number, card in enumerate(cards, start=1):
             result_message, future_timestamp, boss_name = await asyncio.to_thread(parse_boss_info, card)
+            if result_message == IGNORED_DAY_TIMER_RESULT and boss_name:
+                skipped_long_timers.append((card_number, boss_name))
+                continue
             if is_ignored_ocr_result(result_message):
+                skipped_ignored.append((card_number, result_message.removeprefix("IGNORED: ")))
                 continue
             if future_timestamp is None or not boss_name:
                 failures.append((card_number, result_message))
@@ -510,7 +522,7 @@ class BossTimers(commands.Cog):
             )
             confirmations.append((preview_content, preview_file, view))
 
-        return confirmations, failures, skipped_existing, len(cards)
+        return confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, len(cards)
 
     @staticmethod
     def _format_ocr_failures(failures: list[tuple[int, str]], card_count: int) -> str:
@@ -534,6 +546,20 @@ class BossTimers(commands.Cog):
                     f"- Card {card_number}: **{boss_name}** already spawns "
                     f"<t:{timestamp}:F> (<t:{timestamp}:R>)"
                 )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_long_timer_skips(skipped: list[tuple[int, str]]) -> str:
+        lines = ["ℹ️ Skipped bosses with more than 24 hours remaining:"]
+        for card_number, boss_name in skipped:
+            lines.append(f"- Card {card_number}: **{boss_name}** (more than 24 hours)")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_ignored_ocr_skips(skipped: list[tuple[int, str]]) -> str:
+        lines = ["ℹ️ Skipped cards:"]
+        for card_number, reason in skipped:
+            lines.append(f"- Card {card_number}: {reason}")
         return "\n".join(lines)
 
     def _build_event_message_content(self, boss_name: str, timestamp: int, boss_data: dict | None) -> str:
@@ -1596,7 +1622,7 @@ class BossTimers(commands.Cog):
             return
 
         try:
-            confirmations, failures, skipped_existing, card_count = await self._prepare_ocr_confirmations(
+            confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, card_count = await self._prepare_ocr_confirmations(
                 image_to_process, interaction.user.id
             )
             for preview_content, preview_file, view in confirmations:
@@ -1610,6 +1636,16 @@ class BossTimers(commands.Cog):
             if skipped_existing:
                 await interaction.followup.send(
                     self._format_existing_ocr_skips(skipped_existing),
+                    ephemeral=True,
+                )
+            if skipped_long_timers:
+                await interaction.followup.send(
+                    self._format_long_timer_skips(skipped_long_timers),
+                    ephemeral=True,
+                )
+            if skipped_ignored:
+                await interaction.followup.send(
+                    self._format_ignored_ocr_skips(skipped_ignored),
                     ephemeral=True,
                 )
             if failures:
@@ -1753,7 +1789,7 @@ class BossTimers(commands.Cog):
             try:
                 image_bytes = await self._read_attachment_with_retries(image_attachment)
                 img = Image.open(io.BytesIO(image_bytes))
-                confirmations, failures, skipped_existing, card_count = await self._prepare_ocr_confirmations(
+                confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, card_count = await self._prepare_ocr_confirmations(
                     img, message.author.id
                 )
                 for preview_content, preview_file, view in confirmations:
@@ -1764,6 +1800,10 @@ class BossTimers(commands.Cog):
                     )
                 if skipped_existing:
                     await message.channel.send(self._format_existing_ocr_skips(skipped_existing))
+                if skipped_long_timers:
+                    await message.channel.send(self._format_long_timer_skips(skipped_long_timers))
+                if skipped_ignored:
+                    await message.channel.send(self._format_ignored_ocr_skips(skipped_ignored))
                 if failures:
                     await message.channel.send(self._format_ocr_failures(failures, card_count))
 

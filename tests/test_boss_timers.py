@@ -274,7 +274,7 @@ def test_prepare_ocr_confirmations_builds_one_view_per_readable_card(cog, monkey
         lambda name, timestamp, card: (f"preview {name}", object()),
     )
 
-    confirmations, failures, skipped_existing, card_count = asyncio.run(
+    confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, card_count = asyncio.run(
         cog._prepare_ocr_confirmations(object(), requester_id=42)
     )
 
@@ -284,9 +284,11 @@ def test_prepare_ocr_confirmations_builds_one_view_per_readable_card(cog, monkey
     assert confirmations[1][0].startswith("Card 3/3")
     assert failures == [(2, "unreadable")]
     assert skipped_existing == []
+    assert skipped_long_timers == []
+    assert skipped_ignored == []
 
 
-def test_prepare_ocr_confirmations_silently_ignores_spawning_cards(cog, monkeypatch):
+def test_prepare_ocr_confirmations_reports_ignored_cards(cog, monkeypatch):
     cards = [object(), object()]
     monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
     monkeypatch.setattr(module, "is_ignored_ocr_result", lambda message: message == "ignored")
@@ -302,7 +304,7 @@ def test_prepare_ocr_confirmations_silently_ignores_spawning_cards(cog, monkeypa
         lambda name, timestamp, card: (f"preview {name}", object()),
     )
 
-    confirmations, failures, skipped_existing, card_count = asyncio.run(
+    confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, card_count = asyncio.run(
         cog._prepare_ocr_confirmations(object(), requester_id=42)
     )
 
@@ -310,6 +312,8 @@ def test_prepare_ocr_confirmations_silently_ignores_spawning_cards(cog, monkeypa
     assert [view.boss_name for _, _, view in confirmations] == ["Draugr"]
     assert failures == []
     assert skipped_existing == []
+    assert skipped_long_timers == []
+    assert skipped_ignored == [(1, "ignored")]
 
 
 def test_prepare_ocr_confirmations_only_prompts_for_new_bosses(cog, monkeypatch):
@@ -333,7 +337,7 @@ def test_prepare_ocr_confirmations_only_prompts_for_new_bosses(cog, monkeypatch)
         lambda name, timestamp, card: (f"preview {name}", object()),
     )
 
-    confirmations, failures, skipped_existing, card_count = asyncio.run(
+    confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, card_count = asyncio.run(
         cog._prepare_ocr_confirmations(object(), requester_id=42)
     )
 
@@ -341,6 +345,8 @@ def test_prepare_ocr_confirmations_only_prompts_for_new_bosses(cog, monkeypatch)
     assert [view.boss_name for _, _, view in confirmations] == ["Helgarm", "Expired   Boss"]
     assert failures == []
     assert skipped_existing == [(1, "Megir", now + 3600)]
+    assert skipped_long_timers == []
+    assert skipped_ignored == []
 
 
 def test_prepare_ocr_confirmations_skips_duplicate_names_in_same_image(cog, monkeypatch):
@@ -359,13 +365,57 @@ def test_prepare_ocr_confirmations_skips_duplicate_names_in_same_image(cog, monk
         lambda name, timestamp, card: (f"preview {name}", object()),
     )
 
-    confirmations, failures, skipped_existing, _ = asyncio.run(
+    confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, _ = asyncio.run(
         cog._prepare_ocr_confirmations(object(), requester_id=42)
     )
 
     assert [view.boss_name for _, _, view in confirmations] == ["Sinmara"]
     assert failures == []
     assert skipped_existing == [(2, " sinmara ", None)]
+    assert skipped_long_timers == []
+    assert skipped_ignored == []
+
+
+def test_prepare_ocr_confirmations_reports_long_timer_skip(cog, monkeypatch):
+    cards = [object(), object()]
+    monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
+    results = iter([
+        (module.IGNORED_DAY_TIMER_RESULT, None, "Garmwalker"),
+        ("readable", 3000, "Draugr"),
+    ])
+    monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
+    monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
+    monkeypatch.setattr(
+        cog,
+        "_build_ocr_preview",
+        lambda name, timestamp, card: (f"preview {name}", object()),
+    )
+
+    confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, _ = asyncio.run(
+        cog._prepare_ocr_confirmations(object(), requester_id=42)
+    )
+
+    assert [view.boss_name for _, _, view in confirmations] == ["Draugr"]
+    assert failures == []
+    assert skipped_existing == []
+    assert skipped_long_timers == [(1, "Garmwalker")]
+    assert skipped_ignored == []
+
+
+def test_format_long_timer_skips_includes_reason():
+    content = module.BossTimers._format_long_timer_skips([(1, "Garmwalker")])
+
+    assert "Garmwalker" in content
+    assert "more than 24 hours" in content
+
+
+def test_format_ignored_ocr_skips_includes_reason():
+    content = module.BossTimers._format_ignored_ocr_skips([
+        (1, "The Absolute cards are not Domain Rulers."),
+    ])
+
+    assert "Card 1" in content
+    assert "The Absolute cards are not Domain Rulers." in content
 
 
 def test_format_existing_ocr_skips_lists_current_timer_and_image_duplicate():

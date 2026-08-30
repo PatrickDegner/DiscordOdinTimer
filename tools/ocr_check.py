@@ -147,7 +147,8 @@ def main() -> int:
             if timestamp is None:
                 if ocr.is_ignored_ocr_result(message):
                     ignored_cards += 1
-                    print("  RESULT: ignored (boss is spawning)")
+                    reason = message.removeprefix("IGNORED: ")
+                    print(f"  RESULT: ignored ({reason})")
                     continue
                 print("  RESULT: no timer parsed")
                 print(f"  {message.splitlines()[0]}")
