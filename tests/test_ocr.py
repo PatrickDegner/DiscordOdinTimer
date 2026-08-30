@@ -5,6 +5,8 @@ timer pass and the plausibility checks can be tested deterministically.
 """
 import time
 
+import cv2
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -43,6 +45,79 @@ def fake_ocr(ocr, monkeypatch):
         return Image.new("RGB", (2000, 1000))
 
     return _install
+
+
+# --- multi-card segmentation ---
+
+def test_split_boss_cards_finds_bordered_portrait_cards(ocr):
+    canvas = np.full((380, 640, 3), 12, dtype=np.uint8)
+    for left in (2, 162, 322, 482):
+        cv2.rectangle(canvas, (left, 5), (left + 150, 374), (90, 90, 90), 2)
+
+    cards = ocr.split_boss_cards(Image.fromarray(canvas))
+
+    assert len(cards) == 4
+    assert all(145 <= card.width <= 155 for card in cards)
+    assert all(card.height == 380 for card in cards)
+
+
+def test_split_boss_cards_keeps_a_wide_single_card_intact(ocr):
+    canvas = np.full((280, 336, 3), 12, dtype=np.uint8)
+    cv2.rectangle(canvas, (2, 2), (333, 277), (90, 90, 90), 2)
+    image = Image.fromarray(canvas)
+
+    cards = ocr.split_boss_cards(image)
+
+    assert len(cards) == 1
+    assert cards[0] is image
+
+
+def _mobile_grid(rows, columns, empty_cells=()):
+    card_width = 336
+    card_height = 280
+    canvas = np.zeros((rows * card_height, columns * card_width, 3), dtype=np.uint8)
+
+    for row in range(rows):
+        for column in range(columns):
+            left = column * card_width
+            top = row * card_height
+            if (row, column) not in empty_cells:
+                canvas[top + 3:top + 230, left + 3:left + card_width - 3] = (35, 55, 75)
+                canvas[top + 70:top + 150, left + 80:left + 250] = (130, 90, 60)
+                canvas[top + 240:top + 270, left + 80:left + 260] = (20, 150, 210)
+
+    for column in range(columns + 1):
+        x = min(column * card_width, canvas.shape[1] - 1)
+        cv2.line(canvas, (x, 0), (x, canvas.shape[0] - 1), (90, 90, 90), 2)
+    for row in range(rows + 1):
+        y = min(row * card_height, canvas.shape[0] - 1)
+        cv2.line(canvas, (0, y), (canvas.shape[1] - 1, y), (90, 90, 90), 2)
+    return Image.fromarray(canvas)
+
+
+def test_split_boss_cards_finds_mobile_card_grid(ocr):
+    cards = ocr.split_boss_cards(_mobile_grid(rows=2, columns=3))
+
+    assert len(cards) == 6
+    assert all(325 <= card.width <= 345 for card in cards)
+    assert all(270 <= card.height <= 290 for card in cards)
+
+
+@pytest.mark.parametrize("columns", [3, 4])
+def test_split_boss_cards_finds_single_mobile_row(ocr, columns):
+    cards = ocr.split_boss_cards(_mobile_grid(rows=1, columns=columns))
+
+    assert len(cards) == columns
+    assert all(325 <= card.width <= 345 for card in cards)
+    assert all(270 <= card.height <= 290 for card in cards)
+
+
+def test_split_boss_cards_omits_empty_mobile_grid_cell(ocr):
+    cards = ocr.split_boss_cards(
+        _mobile_grid(rows=2, columns=4, empty_cells={(1, 3)})
+    )
+
+    assert len(cards) == 7
 
 
 # --- timer token parsing (the whitelist pass output) ---
@@ -204,12 +279,50 @@ def test_parse_boss_info_reports_missing_domain_ruler_label(ocr, fake_ocr):
     assert "some unrelated interface" in message
 
 
+def test_parse_boss_info_recovers_name_when_ruler_label_is_garbled(ocr, fake_ocr):
+    image = fake_ocr(
+        [["noise"], ["somal", "Rte"], ["Svart", "-"], ["©", "15h", "9m", "left"]],
+        timer_text="15h9m",
+    )
+
+    _, timestamp, boss_name = ocr.parse_boss_info(image)
+
+    assert boss_name == "Svart"
+    assert 54535 <= timestamp - int(time.time()) <= 54545
+
+
+def test_parse_boss_info_ignores_spawning_when_ruler_label_is_garbled(ocr, fake_ocr):
+    image = fake_ocr(
+        [["noise"], ["somal", "Rte"], ["Helgarm"], ["(", "Spawning"]],
+        timer_text="",
+    )
+
+    message, timestamp, boss_name = ocr.parse_boss_info(image)
+
+    assert ocr.is_ignored_ocr_result(message)
+    assert timestamp is None
+    assert boss_name is None
+
+
 def test_parse_boss_info_reports_missing_timer_row(ocr, fake_ocr):
     image = fake_ocr([["Domain", "Ruler"], ["Megir"]], timer_text="")
     message, timestamp, _ = ocr.parse_boss_info(image)
 
     assert timestamp is None
     assert "Could not find a remaining time" in message
+
+
+def test_parse_boss_info_ignores_spawning_status(ocr, fake_ocr):
+    image = fake_ocr(
+        [["Domain", "Ruler"], ["Helgarm"], ["(", "Spawning"]],
+        timer_text="",
+    )
+
+    message, timestamp, boss_name = ocr.parse_boss_info(image)
+
+    assert ocr.is_ignored_ocr_result(message)
+    assert timestamp is None
+    assert boss_name is None
 
 
 def test_parse_boss_info_reports_empty_ocr_output(ocr, fake_ocr):

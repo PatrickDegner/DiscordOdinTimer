@@ -3,12 +3,13 @@
 Usage:
     python tools/ocr_check.py                          # every image in tests/images/
     python tools/ocr_check.py shot.png other.jpg       # specific files
+    python tools/ocr_check.py multi_boss.png            # splits and checks every detected card
     python tools/ocr_check.py --dir path/to/folder     # a whole folder
     python tools/ocr_check.py shot.png --raw           # also dump raw OCR text
     python tools/ocr_check.py --out other/folder       # write crops elsewhere
 
-Cropped previews are always written to tests/images/out so the 14% bottom crop
-can be eyeballed for different screenshot aspect ratios.
+Cropped previews are written to tests/images/out by default so card splitting
+and the 14% bottom crop can be eyeballed for different screenshot layouts.
 """
 import argparse
 import importlib.util
@@ -110,7 +111,9 @@ def main() -> int:
     crop_dir = Path(args.out)
     crop_dir.mkdir(parents=True, exist_ok=True)
 
-    parsed = 0
+    parsed_cards = 0
+    ignored_cards = 0
+    total_cards = 0
     for image_path in images:
         print(f"\n=== {image_path.name} ===")
         if not image_path.exists():
@@ -119,33 +122,50 @@ def main() -> int:
 
         with Image.open(image_path) as image:
             print(f"  size: {image.width}x{image.height} (aspect {image.width / image.height:.2f})")
-            cropped = crop(image)
-            print(f"  crop: {cropped.width}x{cropped.height} (removed {image.height - cropped.height}px)")
+            cards = ocr.split_boss_cards(image.copy())
 
-            out_path = crop_dir / f"crop_{image_path.stem}.png"
+        total_cards += len(cards)
+        if len(cards) > 1:
+            print(f"  detected cards: {len(cards)}")
+
+        for card_number, card in enumerate(cards, start=1):
+            label = f"card {card_number}/{len(cards)}" if len(cards) > 1 else "card"
+            print(f"\n  --- {label} ({card.width}x{card.height}) ---")
+
+            cropped = crop(card)
+            suffix = f"_card_{card_number}" if len(cards) > 1 else ""
+            out_path = crop_dir / f"crop_{image_path.stem}{suffix}.png"
             cropped.convert('RGB').save(out_path)
+            print(f"  crop: {cropped.width}x{cropped.height} (removed {card.height - cropped.height}px)")
             print(f"  crop written to {out_path}")
 
             started = time.perf_counter()
-            message, timestamp, boss_name = ocr.parse_boss_info(image.copy())
+            message, timestamp, boss_name = ocr.parse_boss_info(card)
             elapsed = time.perf_counter() - started
+            print(f"  ocr time: {elapsed:.2f}s")
 
-        print(f"  ocr time: {elapsed:.2f}s")
+            if timestamp is None:
+                if ocr.is_ignored_ocr_result(message):
+                    ignored_cards += 1
+                    print("  RESULT: ignored (boss is spawning)")
+                    continue
+                print("  RESULT: no timer parsed")
+                print(f"  {message.splitlines()[0]}")
+                if args.raw:
+                    print(message)
+                continue
 
-        if timestamp is None:
-            print("  RESULT: no timer parsed")
-            print(f"  {message.splitlines()[0]}")
-            if args.raw:
-                print(message)
-        else:
             remaining = timestamp - int(time.time())
-            parsed += 1
+            parsed_cards += 1
             print(f"  RESULT: {boss_name} in {_format_duration(remaining)} ({remaining}s)")
             _print_bot_preview(preview_cog, alert_seconds, boss_name, timestamp)
             if args.raw:
                 print(message)
 
-    print(f"\nChecked {len(images)} image(s), {parsed} parsed, crops in {crop_dir}.")
+    print(
+        f"\nChecked {len(images)} image(s), detected {total_cards} card(s), "
+        f"{parsed_cards} parsed, {ignored_cards} ignored, crops in {crop_dir}."
+    )
     return 0
 
 

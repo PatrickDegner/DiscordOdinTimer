@@ -114,6 +114,10 @@ When you DM a screenshot to the bot or use `/boss add normal`, the bot does not 
 
 Only the person who uploaded the image can use the buttons. The preview expires after 3 minutes, and no file is written to disk unless you confirm.
 
+Screenshots containing a horizontal row of bordered portrait boss cards or a single-row/multi-row mobile card layout are split automatically. Empty grid cells are skipped, and each readable card gets its own numbered preview and confirmation controls. Cards whose status is `Spawning` are ignored, while other unreadable cards are reported without blocking the successful cards.
+
+Before showing confirmations, the bot compares each OCR boss name with future timers already registered. Bosses that already have an active timer are listed as skipped, and only newly timed bosses receive confirmation controls. This means a boss previously ignored as `Spawning` is offered normally once a later screenshot shows a timer. Matching ignores capitalization and repeated surrounding whitespace; expired timers do not block a new entry.
+
 If a matching file exists in `data/boss_images/`, the preview shows **that** image rather than the screenshot, so what you see is what gets posted.
 
 The screenshot is read in two passes: a layout pass that finds the `Domain Ruler` label, the boss name, and the timer row, then a digits-only pass over just the timer words. The second pass restricts Tesseract to the characters `0123456789hms`, so letter look-alikes such as `ih`/`Ih`/`th` for `1h` cannot be produced. Timer formats like `6m 52s left`, `1h 4m left`, and `14h 23m left` are all supported.
