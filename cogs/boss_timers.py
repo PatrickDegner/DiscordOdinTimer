@@ -101,13 +101,14 @@ class OcrTimeCorrectionModal(discord.ui.Modal, title="Correct remaining time"):
 class OcrConfirmView(discord.ui.View):
     """Confirmation step so a misread OCR result never silently creates a timer."""
 
-    def __init__(self, cog: 'BossTimers', boss_name, future_timestamp, cropped_image, requester_id, timeout=180):
+    def __init__(self, cog: 'BossTimers', boss_name, future_timestamp, cropped_image, requester_id, formatted_time=None, timeout=180):
         super().__init__(timeout=timeout)
         self.cog = cog
         self.boss_name = boss_name
         self.future_timestamp = future_timestamp
         self.cropped_image = cropped_image
         self.requester_id = requester_id
+        self.formatted_time = formatted_time
         self.message = None
         self.completed = False
 
@@ -479,11 +480,14 @@ class BossTimers(commands.Cog):
         return discord.File(buffer, filename=filename)
 
     @staticmethod
-    def _build_ocr_preview_content(boss_name: str, future_timestamp: int, library_image_path: str | None = None) -> str:
+    def _build_ocr_preview_content(boss_name: str, future_timestamp: int, formatted_time: str | None = None, library_image_path: str | None = None) -> str:
         content = (
             f"\U0001F50E OCR result: **{boss_name}**\n"
-            f"Spawns <t:{future_timestamp}:F> which is <t:{future_timestamp}:R>.\n"
+            f"Spawns <t:{future_timestamp}:F> which is <t:{future_timestamp}:R>"
         )
+        if formatted_time:
+            content += f" (image showed **{formatted_time}** remaining)"
+        content += ".\n"
         if library_image_path:
             content += f"Using the saved image `{library_image_path}` instead of the screenshot.\n"
         content += (
@@ -492,7 +496,7 @@ class BossTimers(commands.Cog):
         )
         return content
 
-    def _build_ocr_preview(self, boss_name: str, future_timestamp: int, cropped_image: Image.Image):
+    def _build_ocr_preview(self, boss_name: str, future_timestamp: int, cropped_image: Image.Image, formatted_time: str | None = None):
         """Preview shows the image that will actually be posted, not always the crop."""
         library_image_path = self._find_library_boss_image(boss_name)
         if library_image_path and os.path.exists(library_image_path):
@@ -502,7 +506,7 @@ class BossTimers(commands.Cog):
             preview_file = self._image_to_discord_file(cropped_image)
             normalized = None
 
-        return self._build_ocr_preview_content(boss_name, future_timestamp, normalized), preview_file
+        return self._build_ocr_preview_content(boss_name, future_timestamp, formatted_time, normalized), preview_file
 
     @staticmethod
     def _normalize_boss_name(boss_name: str) -> str:
@@ -531,7 +535,7 @@ class BossTimers(commands.Cog):
         accepted_names = set()
 
         for card_number, card in enumerate(cards, start=1):
-            result_message, future_timestamp, boss_name = await asyncio.to_thread(parse_boss_info, card)
+            result_message, future_timestamp, boss_name, formatted_time = await asyncio.to_thread(parse_boss_info, card)
             if result_message == IGNORED_DAY_TIMER_RESULT and boss_name:
                 skipped_long_timers.append((card_number, boss_name))
                 continue
@@ -554,7 +558,7 @@ class BossTimers(commands.Cog):
 
             cropped_image = self._crop_image_for_timer(card)
             preview_content, preview_file = self._build_ocr_preview(
-                boss_name, future_timestamp, cropped_image
+                boss_name, future_timestamp, cropped_image, formatted_time
             )
             if len(cards) > 1:
                 preview_content = f"Card {card_number}/{len(cards)}\n{preview_content}"
@@ -564,6 +568,7 @@ class BossTimers(commands.Cog):
                 future_timestamp,
                 cropped_image,
                 requester_id,
+                formatted_time,
             )
             confirmations.append((preview_content, preview_file, view))
 

@@ -327,6 +327,28 @@ def validate_remaining_seconds(total_seconds: int) -> str | None:
     return None
 
 
+def format_remaining_time(total_seconds: int) -> str:
+    """Converts seconds to human-readable format like '18h', '2h 30m', '45m', etc."""
+    hours = total_seconds // 3600
+    remaining = total_seconds % 3600
+    minutes = remaining // 60
+    seconds = remaining % 60
+    
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if seconds > 0 or not parts:
+        parts.append(f"{seconds}s")
+    
+    # If we have hours, don't show seconds
+    if hours > 0 and seconds > 0:
+        parts.pop()  # Remove seconds
+    
+    return " ".join(parts)
+
+
 def _parse_time_components(text: str | None) -> dict[str, int]:
     if not text:
         return {}
@@ -508,11 +530,11 @@ def parse_boss_info(image_source):
     Reads a boss card in two passes: a layout pass for the name and a
     digits-only pass for the timer row. Retries with other binarizations when
     the card art defeats the primary one.
-    Returns: (discord_message, future_timestamp, boss_name)
+    Returns: (discord_message, future_timestamp, boss_name, formatted_time)
     """
     try:
         if not isinstance(image_source, Image.Image):
-            return "ERROR: Invalid image source provided. Expected a PIL Image object.", None, None
+            return "ERROR: Invalid image source provided. Expected a PIL Image object.", None, None, None
 
         first_result = None
         for processed_img in _candidate_images(image_source):
@@ -526,13 +548,13 @@ def parse_boss_info(image_source):
     except pytesseract.TesseractNotFoundError:
         return (
             "ERROR: Tesseract OCR engine not found. Please install Tesseract and configure its path if necessary."
-        ), None, None
+        ), None, None, None
     except RuntimeError as exc:
         if 'timeout' in str(exc).lower():
-            return "ERROR: OCR timed out while processing this image.", None, None
-        return f"An unexpected OCR error occurred: {exc}", None, None
+            return "ERROR: OCR timed out while processing this image.", None, None, None
+        return f"An unexpected OCR error occurred: {exc}", None, None, None
     except Exception as e:
-        return f"An unexpected error occurred: {e}", None, None
+        return f"An unexpected error occurred: {e}", None, None, None
 
 
 def _parse_processed_card(processed_img):
@@ -549,13 +571,13 @@ def _parse_processed_card(processed_img):
     full_text = '\n'.join(line['text'] for line in lines)
 
     if not full_text.strip():
-        return "ERROR: No text was extracted from the image by Tesseract OCR.", None, None
+        return "ERROR: No text was extracted from the image by Tesseract OCR.", None, None, None
 
     ruler_index = _find_ruler_line_index(lines)
     if _has_absolute_label(lines):
-        return IGNORED_ABSOLUTE_RESULT, None, None
+        return IGNORED_ABSOLUTE_RESULT, None, None, None
     if _has_spawning_status(lines, after=ruler_index if ruler_index is not None else -1):
-        return IGNORED_SPAWNING_RESULT, None, None
+        return IGNORED_SPAWNING_RESULT, None, None, None
 
     timer_index = _find_timer_line_index(
         lines,
@@ -567,12 +589,12 @@ def _parse_processed_card(processed_img):
             return (
                 "Could not find a timer row in the extracted card text."
                 f"{ocr_debug_snippet(full_text)}"
-            ), None, None
+            ), None, None, None
         return (
             "Could not find a remaining time (hours/minutes/seconds) below the "
             "'Domain Ruler' label."
             f"{ocr_debug_snippet(full_text)}"
-        ), None, None
+        ), None, None, None
 
     if ruler_index is None:
         boss_name = _extract_name_before_timer(lines, timer_index)
@@ -582,11 +604,11 @@ def _parse_processed_card(processed_img):
         return (
             "ERROR: A timer was found but no boss name could be read."
             f"{ocr_debug_snippet(full_text)}"
-        ), None, None
+        ), None, None, None
 
     timer_line = lines[timer_index]
     if _DAY_TOKEN_PATTERN.search(timer_line['text']):
-        return IGNORED_DAY_TIMER_RESULT, None, boss_name
+        return IGNORED_DAY_TIMER_RESULT, None, boss_name, None
 
     timer_text = _read_timer_region(layout_img, timer_line)
     total_seconds_remaining = parse_remaining_seconds(timer_text)
@@ -603,7 +625,7 @@ def _parse_processed_card(processed_img):
         return (
             f"Could not read the remaining time from the timer row '{timer_line['text']}'."
             f"{ocr_debug_snippet(full_text)}"
-        ), None, None
+        ), None, None, None
 
     validation_error = validate_remaining_seconds(total_seconds_remaining)
     if validation_error:
@@ -611,13 +633,14 @@ def _parse_processed_card(processed_img):
             f"ERROR: {validation_error}\nDetected boss: '{boss_name}', "
             f"timer text: '{timer_text.strip()}'."
             f"{ocr_debug_snippet(full_text)}"
-        ), None, None
+        ), None, None, None
 
     future_timestamp = int(time.time() + total_seconds_remaining)
+    formatted_time = format_remaining_time(total_seconds_remaining)
     discord_message = (
         f"**{boss_name}** \n<t:{future_timestamp}:F> thats <t:{future_timestamp}:R>"
     )
-    return discord_message, future_timestamp, boss_name
+    return discord_message, future_timestamp, boss_name, formatted_time
 
 
 if __name__ == "__main__":

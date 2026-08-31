@@ -262,16 +262,16 @@ def test_prepare_ocr_confirmations_builds_one_view_per_readable_card(cog, monkey
     cards = [object(), object(), object()]
     monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
     results = iter([
-        ("first", 1000, "Svart"),
-        ("unreadable", None, None),
-        ("third", 3000, "Draugr"),
+        ("first", 1000, "Svart", "16m"),
+        ("unreadable", None, None, None),
+        ("third", 3000, "Draugr", "50m"),
     ])
     monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
     monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
     monkeypatch.setattr(
         cog,
         "_build_ocr_preview",
-        lambda name, timestamp, card: (f"preview {name}", object()),
+        lambda name, timestamp, card, formatted_time=None: (f"preview {name}", object()),
     )
 
     confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, card_count = asyncio.run(
@@ -293,15 +293,15 @@ def test_prepare_ocr_confirmations_reports_ignored_cards(cog, monkeypatch):
     monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
     monkeypatch.setattr(module, "is_ignored_ocr_result", lambda message: message == "ignored")
     results = iter([
-        ("ignored", None, None),
-        ("readable", 3000, "Draugr"),
+        ("ignored", None, None, None),
+        ("readable", 3000, "Draugr", "50m"),
     ])
     monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
     monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
     monkeypatch.setattr(
         cog,
         "_build_ocr_preview",
-        lambda name, timestamp, card: (f"preview {name}", object()),
+        lambda name, timestamp, card, formatted_time=None: (f"preview {name}", object()),
     )
 
     confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, card_count = asyncio.run(
@@ -325,16 +325,16 @@ def test_prepare_ocr_confirmations_only_prompts_for_new_bosses(cog, monkeypatch)
     cards = [object(), object(), object()]
     monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
     results = iter([
-        ("existing", now + 7200, "Megir"),
-        ("new after spawning", now + 1800, "Helgarm"),
-        ("expired may return", now + 2400, "Expired   Boss"),
+        ("existing", now + 7200, "Megir", "2h"),
+        ("new after spawning", now + 1800, "Helgarm", "30m"),
+        ("expired may return", now + 2400, "Expired   Boss", "40m"),
     ])
     monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
     monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
     monkeypatch.setattr(
         cog,
         "_build_ocr_preview",
-        lambda name, timestamp, card: (f"preview {name}", object()),
+        lambda name, timestamp, card, formatted_time=None: (f"preview {name}", object()),
     )
 
     confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, card_count = asyncio.run(
@@ -354,15 +354,15 @@ def test_prepare_ocr_confirmations_skips_duplicate_names_in_same_image(cog, monk
     cards = [object(), object()]
     monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
     results = iter([
-        ("first", now + 1800, "Sinmara"),
-        ("duplicate", now + 1800, " sinmara "),
+        ("first", now + 1800, "Sinmara", "30m"),
+        ("duplicate", now + 1800, " sinmara ", "30m"),
     ])
     monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
     monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
     monkeypatch.setattr(
         cog,
         "_build_ocr_preview",
-        lambda name, timestamp, card: (f"preview {name}", object()),
+        lambda name, timestamp, card, formatted_time=None: (f"preview {name}", object()),
     )
 
     confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, _ = asyncio.run(
@@ -380,15 +380,15 @@ def test_prepare_ocr_confirmations_reports_long_timer_skip(cog, monkeypatch):
     cards = [object(), object()]
     monkeypatch.setattr(module, "split_boss_cards", lambda image: cards)
     results = iter([
-        (module.IGNORED_DAY_TIMER_RESULT, None, "Garmwalker"),
-        ("readable", 3000, "Draugr"),
+        (module.IGNORED_DAY_TIMER_RESULT, None, "Garmwalker", None),
+        ("readable", 3000, "Draugr", "50m"),
     ])
     monkeypatch.setattr(module, "parse_boss_info", lambda card: next(results))
     monkeypatch.setattr(cog, "_crop_image_for_timer", lambda card: card)
     monkeypatch.setattr(
         cog,
         "_build_ocr_preview",
-        lambda name, timestamp, card: (f"preview {name}", object()),
+        lambda name, timestamp, card, formatted_time=None: (f"preview {name}", object()),
     )
 
     confirmations, failures, skipped_existing, skipped_long_timers, skipped_ignored, _ = asyncio.run(
