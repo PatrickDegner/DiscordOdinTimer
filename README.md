@@ -185,6 +185,8 @@ For recurring static events the chosen timezone is stored with the event, so eve
   - `weekends`
   - `monthly`
   - `first of month`
+  - `every 15th`
+  - `15th of month`
   - `Tuesday and Thursday`
   - `Sunday`
 - `time`: 24-hour time in `HH:MM` format, e.g. `19:30`
@@ -216,6 +218,9 @@ For recurring static events the chosen timezone is stored with the event, so eve
 - `/boss add static Dragon Saturday 20:00` + `alert_mention: @everyone`
 - `/boss add static Dragon Saturday 20:00` + `alert_mention: @LW`
 - `/boss add static Dragon Saturday 20:00` + `alert_mention: LW`
+- `/boss add static MonthlyRaid monthly 20:00`
+- `/boss add static MonthlyRaid "first of month" 20:00`
+- `/boss add static MonthlyRaid "every 15th" 20:00 timezone: Europe/Berlin`
 - `/boss add static ArenaBoss "Tuesday and Thursday" 18:15`
 - `/boss add static WeekendRaid weekends 12:00` + image + `alert_time: 15m`
 - `/boss add onetime CastlePush 2026-07-12 20:00`
