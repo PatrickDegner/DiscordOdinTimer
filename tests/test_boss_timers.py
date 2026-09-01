@@ -559,6 +559,44 @@ def test_parse_date_rejects_invalid_calendar_date():
         raise AssertionError("Expected ValueError for invalid calendar date")
 
 
+def test_parse_schedule_days_accepts_monthly_first_of_month_aliases():
+    assert module.BossTimers._parse_schedule_days('monthly') == ['monthly']
+    assert module.BossTimers._parse_schedule_days('first of month') == ['monthly']
+    assert module.BossTimers._parse_schedule_days('1st of month') == ['monthly']
+
+
+def test_parse_schedule_days_accepts_specific_day_of_month():
+    assert module.BossTimers._parse_schedule_days('every 15th') == ['monthly', 15]
+    assert module.BossTimers._parse_schedule_days('15th of month') == ['monthly', 15]
+
+
+def test_get_next_occurrence_returns_correct_timestamp_for_monthly_first_of_month_event():
+    cog = module.BossTimers.__new__(module.BossTimers)\n    event = {
+        'id': 'monthly-1',
+        'name': 'Monthly Test',
+        'schedule': 'first of month',
+        'time': '20:00',
+        'timezone': 'UTC',
+    }
+    after = int(_datetime(2026, 1, 1, 21, 0, tzinfo=module.ZoneInfo('UTC')).timestamp())
+    expected_ts = int(_datetime(2026, 2, 1, 20, 0, tzinfo=module.ZoneInfo('UTC')).timestamp())
+    assert cog._get_next_occurrence(event, after=after) == expected_ts
+
+
+def test_get_next_occurrence_returns_correct_timestamp_for_specific_day_of_month_event():
+    cog = module.BossTimers.__new__(module.BossTimers)
+    event = {
+        'id': 'monthly-15',
+        'name': 'Fifteenth Test',
+        'schedule': 'every 15th',
+        'time': '20:00',
+        'timezone': 'UTC',
+    }
+    after = int(_datetime(2026, 1, 10, 21, 0, tzinfo=module.ZoneInfo('UTC')).timestamp())
+    expected_ts = int(_datetime(2026, 1, 15, 20, 0, tzinfo=module.ZoneInfo('UTC')).timestamp())
+    assert cog._get_next_occurrence(event, after=after) == expected_ts
+
+
 def test_get_next_occurrence_returns_correct_timestamp_for_onetime_event():
     cog = module.BossTimers.__new__(module.BossTimers)
     # Pin the zone so the expectation does not depend on the host's clock settings.

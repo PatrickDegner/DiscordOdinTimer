@@ -183,6 +183,8 @@ For recurring static events the chosen timezone is stored with the event, so eve
   - `daily`
   - `weekdays`
   - `weekends`
+  - `monthly`
+  - `first of month`
   - `Tuesday and Thursday`
   - `Sunday`
 - `time`: 24-hour time in `HH:MM` format, e.g. `19:30`

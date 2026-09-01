@@ -1055,13 +1055,41 @@ class BossTimers(commands.Cog):
         self._save_timers()
         return current_timestamp, data, changes
 
-    def _parse_schedule_days(self, schedule_text: str):
+    @staticmethod
+    def _parse_schedule_days(schedule_text: str):
         normalized = schedule_text.strip().lower().replace('and', ',')
+        normalized = normalized.replace('-', ' ')
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+
+        if normalized.startswith('every '):
+            normalized = normalized[6:].strip()
+
+        monthly_aliases = {
+            'monthly',
+            'first of month',
+            'first day of month',
+            '1st of month',
+            '1st day of month',
+            'first of the month',
+            'first day of the month',
+            '1st of the month',
+            '1st day of the month',
+        }
+        if normalized in monthly_aliases:
+            return ['monthly']
+
+        monthly_day_match = re.fullmatch(r'(\d{1,2})(?:st|nd|rd|th)(?:\s+of(?:\s+the)?\s+month)?', normalized)
+        if monthly_day_match:
+            day = int(monthly_day_match.group(1))
+            if 1 <= day <= 31:
+                return ['monthly', day]
+            raise ValueError("Monthly schedule day must be between 1 and 31.")
+
         if normalized in ('daily', 'everyday'):
             return list(range(7))
-        if normalized in ('weekdays', 'monday-friday', 'mon-fri'):
+        if normalized in ('weekdays', 'monday friday', 'monday-friday', 'mon fri', 'mon-fri'):
             return [0, 1, 2, 3, 4]
-        if normalized in ('weekends', 'saturday-sunday', 'sat-sun'):
+        if normalized in ('weekends', 'saturday sunday', 'saturday-sunday', 'sat sun', 'sat-sun'):
             return [5, 6]
 
         mapping = {
@@ -1082,10 +1110,10 @@ class BossTimers(commands.Cog):
             if part in mapping:
                 days.append(mapping[part])
             else:
-                raise ValueError(f"Invalid schedule day: '{part}'. Use names like Tuesday or 'daily'.")
+                raise ValueError(f"Invalid schedule day: '{part}'. Use names like Tuesday, 'daily', 'monthly', or a day like '15th'.")
 
         if not days:
-            raise ValueError("Schedule must include at least one weekday or 'daily'.")
+            raise ValueError("Schedule must include at least one weekday, 'daily', 'monthly', or a day like '15th'.")
 
         return sorted(set(days))
 
@@ -1150,8 +1178,35 @@ class BossTimers(commands.Cog):
 
         after_dt = self._wall_clock_at(after_ts, zone)
         hour, minute = self._parse_time(event['time'])
-        weekdays = self._parse_schedule_days(event['schedule'])
+        schedule_days = self._parse_schedule_days(event['schedule'])
 
+        if schedule_days == ['monthly']:
+            for month_offset in range(0, 24):
+                candidate_month = after_dt.month + month_offset
+                candidate_year = after_dt.year + (candidate_month - 1) // 12
+                candidate_month = ((candidate_month - 1) % 12) + 1
+                candidate_date = datetime(candidate_year, candidate_month, 1).date()
+                candidate_dt = datetime(candidate_date.year, candidate_date.month, 1, hour, minute)
+                candidate_ts = self._naive_to_timestamp(candidate_dt, zone)
+                if candidate_ts > after_ts:
+                    return int(candidate_ts)
+            raise ValueError("Could not find a next monthly occurrence within the next two years.")
+
+        if len(schedule_days) == 2 and schedule_days[0] == 'monthly':
+            month_day = schedule_days[1]
+            for month_offset in range(0, 24):
+                candidate_month = after_dt.month + month_offset
+                candidate_year = after_dt.year + (candidate_month - 1) // 12
+                candidate_month = ((candidate_month - 1) % 12) + 1
+                last_day = monthrange(candidate_year, candidate_month)[1]
+                target_day = min(month_day, last_day)
+                candidate_dt = datetime(candidate_year, candidate_month, target_day, hour, minute)
+                candidate_ts = self._naive_to_timestamp(candidate_dt, zone)
+                if candidate_ts > after_ts:
+                    return int(candidate_ts)
+            raise ValueError("Could not find a next monthly occurrence within the next two years.")
+
+        weekdays = schedule_days
         for day_offset in range(0, 14):
             candidate_date = after_dt.date() + timedelta(days=day_offset)
             if candidate_date.weekday() not in weekdays:
