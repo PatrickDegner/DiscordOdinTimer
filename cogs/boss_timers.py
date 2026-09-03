@@ -535,7 +535,11 @@ class BossTimers(commands.Cog):
         accepted_names = set()
 
         for card_number, card in enumerate(cards, start=1):
-            result_message, future_timestamp, boss_name, formatted_time = await asyncio.to_thread(parse_boss_info, card)
+            if len(cards) == 1:
+                result = await asyncio.to_thread(parse_boss_info, card, allow_absolute=True)
+            else:
+                result = await asyncio.to_thread(parse_boss_info, card)
+            result_message, future_timestamp, boss_name, formatted_time = result
             if result_message == IGNORED_DAY_TIMER_RESULT and boss_name:
                 skipped_long_timers.append((card_number, boss_name))
                 continue

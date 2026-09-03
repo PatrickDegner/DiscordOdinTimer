@@ -388,6 +388,19 @@ def test_parse_boss_info_ignores_the_absolute_card(ocr, fake_ocr):
     assert boss_name is None
 
 
+def test_parse_boss_info_accepts_single_absolute_card_when_allowed(ocr, fake_ocr):
+    image = fake_ocr(
+        [["The", "Absolute"], ["(", "17h", "44m", "left"]],
+        timer_text="17h 44m",
+    )
+
+    message, timestamp, boss_name, formatted_time = ocr.parse_boss_info(image, allow_absolute=True)
+
+    assert boss_name == "The Absolute"
+    assert formatted_time == "17h 44m"
+    assert 17 * 3600 + 44 * 60 - 5 <= timestamp - int(time.time()) <= 17 * 3600 + 44 * 60 + 5
+
+
 def test_parse_boss_info_ignores_spawning_when_ruler_label_is_garbled(ocr, fake_ocr):
     image = fake_ocr(
         [["noise"], ["somal", "Rte"], ["Helgarm"], ["(", "Spawning"]],

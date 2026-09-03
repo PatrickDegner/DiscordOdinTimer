@@ -525,7 +525,7 @@ def _read_timer_region(processed_img: Image.Image, line: dict, padding: int = 8)
     )
 
 
-def parse_boss_info(image_source):
+def parse_boss_info(image_source, allow_absolute: bool = False):
     """
     Reads a boss card in two passes: a layout pass for the name and a
     digits-only pass for the timer row. Retries with other binarizations when
@@ -538,7 +538,7 @@ def parse_boss_info(image_source):
 
         first_result = None
         for processed_img in _candidate_images(image_source):
-            result = _parse_processed_card(processed_img)
+            result = _parse_processed_card(processed_img, allow_absolute=allow_absolute)
             if result[1] is not None or is_ignored_ocr_result(result[0]):
                 return result
             if first_result is None:
@@ -557,7 +557,7 @@ def parse_boss_info(image_source):
         return f"An unexpected error occurred: {e}", None, None, None
 
 
-def _parse_processed_card(processed_img):
+def _parse_processed_card(processed_img, allow_absolute: bool = False):
     """Runs both Tesseract passes over one binarized image."""
     layout_top = int(processed_img.height * LAYOUT_REGION_TOP_RATIO)
     layout_img = processed_img.crop((0, layout_top, processed_img.width, processed_img.height))
@@ -574,7 +574,7 @@ def _parse_processed_card(processed_img):
         return "ERROR: No text was extracted from the image by Tesseract OCR.", None, None, None
 
     ruler_index = _find_ruler_line_index(lines)
-    if _has_absolute_label(lines):
+    if _has_absolute_label(lines) and not allow_absolute:
         return IGNORED_ABSOLUTE_RESULT, None, None, None
     if _has_spawning_status(lines, after=ruler_index if ruler_index is not None else -1):
         return IGNORED_SPAWNING_RESULT, None, None, None
