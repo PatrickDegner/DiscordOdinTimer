@@ -1,4 +1,6 @@
 import os
+import json
+from difflib import SequenceMatcher
 import pytesseract
 from PIL import Image, ImageGrab
 import cv2
@@ -35,6 +37,7 @@ TARGET_MOBILE_CARD_ASPECT = 1.20
 _DEBUG_TEXT_LIMIT = 400
 OCR_TIMEOUT_SECONDS = 5
 LAYOUT_REGION_TOP_RATIO = 0.50
+BOSS_NAMES_FILE = Path(__file__).resolve().parent / 'data' / 'boss_names.json'
 
 # Pass 1 reads the layout with a normal alphabet so the boss name stays readable.
 LAYOUT_CONFIG = r'--oem 1 --psm 6 -l eng'
@@ -61,6 +64,43 @@ _DIGIT_FIX = str.maketrans({
 # Two characters max: hours <= 24, minutes and seconds <= 59.
 _TIME_TOKEN_PATTERN = re.compile(r'([0-9iIlL|!tToOqQsSzZbBgG]{1,2})\s*([hms])')
 _DAY_TOKEN_PATTERN = re.compile(r'[0-9iIlL|!tToOqQsSzZbBgG]{1,2}\s*d\b', re.IGNORECASE)
+
+
+def _load_boss_names() -> tuple[str, ...]:
+    try:
+        with BOSS_NAMES_FILE.open(encoding='utf-8') as names_file:
+            names = json.load(names_file)
+    except (OSError, ValueError):
+        return ()
+    if not isinstance(names, list):
+        return ()
+    return tuple(name.strip() for name in names if isinstance(name, str) and name.strip())
+
+
+BOSS_NAMES = _load_boss_names()
+
+
+def _normalize_boss_name(name: str) -> str:
+    return re.sub(r'[^a-z0-9]+', ' ', name.casefold()).strip()
+
+
+def canonicalize_boss_name(name: str) -> str:
+    """Returns the configured boss spelling only for a strong fuzzy match."""
+    normalized = _normalize_boss_name(name)
+    if not normalized:
+        return name
+    for known_name in BOSS_NAMES:
+        if _normalize_boss_name(known_name) == normalized:
+            return known_name
+
+    matches = [
+        (SequenceMatcher(None, normalized, _normalize_boss_name(known_name)).ratio(), known_name)
+        for known_name in BOSS_NAMES
+    ]
+    if not matches:
+        return name
+    score, best_name = max(matches)
+    return best_name if score >= 0.84 else name
 
 
 def ocr_debug_snippet(text: str | None, limit: int = _DEBUG_TEXT_LIMIT) -> str:
@@ -636,6 +676,7 @@ def _parse_processed_card(processed_img, allow_absolute: bool = False):
         ), None, None, None
 
     future_timestamp = int(time.time() + total_seconds_remaining)
+    boss_name = canonicalize_boss_name(boss_name)
     formatted_time = format_remaining_time(total_seconds_remaining)
     discord_message = (
         f"**{boss_name}** \n<t:{future_timestamp}:F> thats <t:{future_timestamp}:R>"

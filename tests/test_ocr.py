@@ -275,6 +275,21 @@ def test_parse_boss_info_uses_the_whitelist_pass(ocr, fake_ocr):
     assert "Megir" in message
 
 
+def test_parse_boss_info_canonicalizes_a_close_boss_name(ocr, fake_ocr):
+    image = fake_ocr(
+        [["Domain", "Ruler"], ["Chaos Beast Garmwa1ker"], ["(", "17h", "44m", "left"]],
+        timer_text="17h44m",
+    )
+
+    _, _, boss_name, _ = ocr.parse_boss_info(image)
+
+    assert boss_name == "Chaos Beast Garmwalker"
+
+
+def test_canonicalize_boss_name_keeps_weak_matches(ocr):
+    assert ocr.canonicalize_boss_name("Completely Unknown Boss") == "Completely Unknown Boss"
+
+
 def test_parse_boss_info_only_sends_lower_half_to_layout_ocr(ocr, monkeypatch):
     image = Image.new("RGB", (100, 200))
     seen = {}
