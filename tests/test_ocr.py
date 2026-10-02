@@ -347,6 +347,18 @@ def test_layout_pass_restores_repeated_hour_digit_dropped_by_whitelist(ocr, fake
     assert 40975 <= timestamp - int(time.time()) <= 40985
 
 
+def test_layout_pass_restores_leading_hour_digit_dropped_by_whitelist(ocr, fake_ocr):
+    image = fake_ocr(
+        [["Domain", "Ruler"], ["B7 - Inferno of Sloth"], ["21h", "6m", "left"]],
+        timer_text="2h6m",
+    )
+
+    _, timestamp, _, formatted_time = ocr.parse_boss_info(image)
+
+    assert formatted_time == "21h 6m"
+    assert 21 * 3600 + 6 * 60 - 5 <= timestamp - int(time.time()) <= 21 * 3600 + 6 * 60 + 5
+
+
 def test_parse_boss_info_falls_back_when_whitelist_pass_is_empty(ocr, fake_ocr):
     image = fake_ocr(CARD_LINES, timer_text="")
     _, timestamp, boss_name, formatted_time = ocr.parse_boss_info(image)

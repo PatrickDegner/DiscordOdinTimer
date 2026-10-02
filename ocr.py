@@ -412,16 +412,17 @@ def parse_remaining_seconds(text: str | None) -> int | None:
     return sum(value * _UNIT_SECONDS[unit] for unit, value in components.items())
 
 
-def _layout_restores_repeated_hour(timer_text: str, layout_text: str) -> bool:
-    """True when layout OCR preserves a repeated hour digit collapsed by the timer pass."""
+def _layout_restores_dropped_hour_digit(timer_text: str, layout_text: str) -> bool:
+    """True when layout OCR preserves a trailing hour digit dropped by the timer pass."""
     timer = _parse_time_components(timer_text)
     layout = _parse_time_components(layout_text)
     layout_hour = layout.get('h')
     timer_hour = timer.get('h')
 
     return (
-        layout_hour in (11, 22)
-        and timer_hour == layout_hour // 11
+        layout_hour is not None
+        and 10 <= layout_hour <= 24
+        and timer_hour == layout_hour // 10
         and timer.get('m') == layout.get('m')
         and timer.get('s') == layout.get('s')
     )
@@ -657,7 +658,7 @@ def _parse_processed_card(processed_img, allow_absolute: bool = False):
         # Fall back to the layout pass when the digits-only pass reads nothing.
         timer_text = timer_line['text']
         total_seconds_remaining = parse_remaining_seconds(timer_text)
-    elif _layout_restores_repeated_hour(timer_text, timer_line['text']):
+    elif _layout_restores_dropped_hour_digit(timer_text, timer_line['text']):
         timer_text = timer_line['text']
         total_seconds_remaining = parse_remaining_seconds(timer_text)
 
